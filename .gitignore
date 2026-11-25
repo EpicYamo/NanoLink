@@ -1,0 +1,10 @@
+.pio/
+.vscode/
+.idea/
+*.elf
+*.hex
+*.bin
+*.map
+*.log
+__pycache__/
+.DS_Store
