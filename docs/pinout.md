@@ -55,3 +55,8 @@ Both nRF24 modules use 3.3 V logic. The EBYTE E01-2G4M27D radio's VCC may be
 powered from a stable 5 V BEC (2.5–5.5 V rated), but its CE/CSN/SPI pins are
 3.3 V logic only. Keep the aircraft USB disconnected when BEC is powering the
 F401 board.
+
+For the common GY-91-style sensor breakout, connect its VIN/VCC input to the
+F401 3V3 rail, GND to GND, SDA to PB3, and SCL to PB10. If the breakout exposes
+a separate `3V3` pin, that is commonly the onboard regulator output, not the
+power input. Check the markings on the actual board before soldering.

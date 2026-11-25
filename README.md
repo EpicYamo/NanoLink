@@ -81,19 +81,21 @@ aileron/elevator PWM pins, and the ESC keeps its existing PWM pin.
 | MPU9250 + BMP280 SDA | PB3 (I2C2) | PB3 is also SWO; firmware does not use SWO |
 | MPU9250 + BMP280 SCL | PB10 (I2C2) | STM32duino `TwoWire` uses SDA, SCL order |
 | Link LED | PC13 | Existing board LED, active-low |
-| Sensor power / ground | 3V3 / GND | Use 3.3 V unless the exact sensor breakout explicitly specifies otherwise |
+| Sensor power / ground | 3V3 / GND | Feed the breakout's VIN/VCC input with 3.3 V; do not feed a breakout's 3V3 output pin |
 
 ```text
-F401 3V3  -> sensor VCC (only if the breakout accepts 3.3 V)
+F401 3V3  -> sensor VIN/VCC input (not the breakout's 3V3 output)
 F401 GND  -> sensor GND
 F401 PB3  -> sensor SDA
 F401 PB10 -> sensor SCL
 ```
 
-Leave INT, AD0, NCS and FSYNC disconnected for the initial I2C setup. MPU9250
-address is usually `0x68` or `0x69` depending on AD0; BMP280 is usually `0x76`
-or `0x77`. Firmware tries both common BMP280 addresses. Check the breakout's
-labels and onboard pull-ups before wiring; do not apply BEC 5 V to sensor I/O.
+For the common GY-91-style breakout, I2C uses power, ground, SDA and SCL;
+SDO/SA0 may select the MPU address, while NCS/CSB are SPI-select pins. Check
+the exact board's pin labels/default straps before leaving these pins open.
+MPU9250 address is usually `0x68` or `0x69`; BMP280 is usually `0x76` or
+`0x77`. Firmware tries both common BMP280 addresses. Check onboard I2C pull-ups
+before adding any; do not apply BEC 5 V to sensor I/O.
 
 The EBYTE E01-2G4M27D VCC input accepts 2.5–5.5 V, but its SPI/control logic is
 3.3 V. A stable 5 V BEC supply is permitted; the module can draw large TX
