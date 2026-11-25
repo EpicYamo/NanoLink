@@ -3,6 +3,10 @@
 #include <EEPROM.h>
 #include <RF24.h>
 
+#ifndef ENABLE_AUX_POT1
+#define ENABLE_AUX_POT1 0
+#endif
+
 namespace {
 
 constexpr uint8_t PIN_RADIO_CE = 9;
@@ -94,7 +98,11 @@ void readSwitches() {
   else if (modeRaw < 700) packet.switch2State = 1;
   else packet.switch2State = 2;
 
-  packet.pot1 = 0; // A5 is faulty and is not used.
+#if ENABLE_AUX_POT1
+  packet.pot1 = analogRead(A5);
+#else
+  packet.pot1 = 0;
+#endif
   packet.pot2 = analogRead(PIN_THROTTLE_BOOST);
 }
 
