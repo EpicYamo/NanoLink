@@ -62,6 +62,22 @@ The I2C bus uses 3.3 V logic. MPU9250 addresses are commonly `0x68` or `0x69`;
 BMP280 addresses are commonly `0x76` or `0x77`. The firmware probes both common
 BMP280 addresses.
 
+## Optional GYGPSV1 NEO-8M GPS module
+
+The GPS uses UART and does not share the sensor's I2C pins:
+
+| GPS module | STM32F401 |
+|---|---|
+| VCC | 3.3 V (module input also supports 3–5 V) |
+| GND | GND |
+| TX | PA10 / USART1 RX |
+| RX | PA9 / USART1 TX |
+
+The module's default baud rate is 9600. For receiving position data only, GPS
+TX, VCC, and GND are sufficient; GPS RX can remain disconnected. The current
+aircraft firmware does not yet parse GPS data. Place the patch antenna facing
+up with a clear view of the sky.
+
 ## nRF24 radio power and logic
 
 The EBYTE E01-2G4M27D VCC input supports 2.5–5.5 V and may be powered from a
