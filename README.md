@@ -1,11 +1,16 @@
 # NanoLink
 
-An evolving DIY fixed-wing RC and flight-telemetry project. The current stage
-keeps the existing Arduino Nano transmitter and its nRF24 control link, moves
-the aircraft receiver/flight-control work to an STM32F401, mixes two elevon
-servos, and sends MPU9250 + BMP280 telemetry to a second STM32F401 connected to
-a computer over USB. The aircraft itself does not need a USB connection during
-operation.
+An evolving, three-module DIY fixed-wing RC project:
+
+1. **Handheld transmitter:** Arduino Nano reads the sticks, switches and trims,
+   then sends the existing nRF24 control packet.
+2. **Aircraft controller/receiver:** STM32F401 receives RC, mixes the two
+   elevons, drives the ESC, and reads the MPU9250 + BMP280.
+3. **Computer ground station:** a second STM32F401 receives aircraft telemetry
+   over nRF24 and forwards it to the computer over USB serial.
+
+The aircraft itself does not need a USB connection during operation. Each
+module has its own firmware project and build target.
 
 This is a hobby prototype, not certified flight-control equipment. The current
 firmware is **manual-control + sensor-telemetry only**: stabilization, GPS,
@@ -113,9 +118,10 @@ is not connected to the computer.
 
 ## Firmware and build
 
-Projects are separate PlatformIO environments in `firmware/`:
+The three firmware projects are separate PlatformIO projects in `firmware/`:
 
 ```sh
+pio run -d firmware/transmitter_nano
 pio run -d firmware/aircraft_f401
 pio run -d firmware/ground_station_f401
 ```

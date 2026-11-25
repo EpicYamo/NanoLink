@@ -1,5 +1,16 @@
 # NanoLink architecture and flight-mode proposal
 
+## Three independently built modules
+
+- `firmware/transmitter_nano`: handheld controls and the compatible 12-byte RC
+  packet.
+- `firmware/aircraft_f401`: aircraft-side RC reception, elevon/ESC outputs,
+  sensor acquisition, and scheduled telemetry transmission.
+- `firmware/ground_station_f401`: computer-side telemetry reception and USB
+  serial output.
+
+They share a documented packet contract, not a shared firmware binary or build.
+
 ## Radio topology
 
 The aircraft F401 has one nRF24 transceiver. It listens to the existing Nano
