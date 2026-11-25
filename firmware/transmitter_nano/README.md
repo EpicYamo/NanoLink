@@ -1,17 +1,17 @@
 # Arduino Nano handheld transmitter
 
-This is a separate PlatformIO project for the existing DIY handheld remote.
-It keeps the original Nano pin assignments, RF address/channel/data-rate and
-12-byte packet contract used by `aircraft_f401`.
+This PlatformIO project implements the handheld transmitter using an Arduino
+Nano. Its pin assignments and 12-byte RC packet are documented in the
+repository's [hardware guide](../../docs/hardware-wiring.md) and
+[system design](../../docs/system-design.md).
 
-The spare potentiometer on A5 is intentionally not sampled: it is known to
-produce erratic readings. Its packet field is sent as zero and is ignored by
-the aircraft firmware. A4 remains the throttle-boost control.
+The A4 potentiometer sets throttle boost. A5 is an optional auxiliary
+potentiometer; the transmitter sends zero for that field by default, and the
+aircraft firmware does not currently use it. To sample A5, add
+`-D ENABLE_AUX_POT1=1` to this project's `build_flags` in `platformio.ini`.
 
-The A7 three-position switch still selects the transmitter's existing
-Cruise/Reflex throttle behavior. The A6 arm input is currently a boolean. A
-future DISARM / MANUAL / STABILIZED three-position mapping needs a packet and
-transmitter update together; it is not active in this firmware.
+The A7 switch selects the Cruise/Reflex throttle response. A6 controls the
+binary arm state.
 
 Build with:
 
@@ -19,5 +19,5 @@ Build with:
 pio run -d firmware/transmitter_nano
 ```
 
-Check stick direction and arm/disarm behavior with the aircraft propeller
-removed before connecting the motor for any powered test.
+Check stick direction and arm/disarm behavior with the propeller removed during
+initial setup.
