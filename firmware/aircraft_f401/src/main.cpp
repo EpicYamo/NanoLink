@@ -12,6 +12,9 @@
 #ifndef ESC_MAX_US
 #define ESC_MAX_US 2000
 #endif
+#ifndef OPEN_DRAIN_OUTPUTS
+#define OPEN_DRAIN_OUTPUTS 1
+#endif
 
 namespace {
 
@@ -41,6 +44,22 @@ MPU9250_asukiaaa imu;
 Adafruit_BMP280 barometer(&SensorWire);
 RF24 radio(PIN_NRF_CE, PIN_NRF_CSN, RF_SPI_HZ);
 HardwareTimer *pwm = nullptr;
+
+#if OPEN_DRAIN_OUTPUTS
+// The servo/ESC signal lines are pulled up to the BEC's 5 V rail through
+// external resistors. Hold them low before normal startup so the pull-ups do
+// not present a steady high level while the ESC is booting.
+struct EarlyOutputsLow {
+  EarlyOutputsLow() {
+    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOBEN;
+    GPIOB->OTYPER |= (1u << 6) | (1u << 7) | (1u << 8);
+    GPIOB->BSRR = (1u << (6 + 16)) | (1u << (7 + 16)) | (1u << (8 + 16));
+    GPIOB->MODER &= ~((3u << 12) | (3u << 14) | (3u << 16));
+    GPIOB->MODER |=  ((1u << 12) | (1u << 14) | (1u << 16));
+  }
+};
+__attribute__((used)) EarlyOutputsLow earlyOutputsLow;
+#endif
 
 struct __attribute__((packed)) RcPacket {
   uint16_t throttle;
@@ -106,12 +125,15 @@ uint16_t clampAge(uint32_t ageMs) {
   return ageMs > 65535UL ? 65535U : static_cast<uint16_t>(ageMs);
 }
 
+void applyOutputDriveMode();
+
 void outputsBegin() {
   pwm = new HardwareTimer(TIM4);
   pwm->setOverflow(20000, MICROSEC_FORMAT);
   pwm->setMode(1, TIMER_OUTPUT_COMPARE_PWM1, PIN_LEFT_ELEVON);
   pwm->setMode(2, TIMER_OUTPUT_COMPARE_PWM1, PIN_RIGHT_ELEVON);
   pwm->setMode(3, TIMER_OUTPUT_COMPARE_PWM1, PIN_ESC);
+  applyOutputDriveMode();
   pwm->setCaptureCompare(1, SERVO_CENTER_US, MICROSEC_COMPARE_FORMAT);
   pwm->setCaptureCompare(2, SERVO_CENTER_US, MICROSEC_COMPARE_FORMAT);
   pwm->setCaptureCompare(3, ESC_MIN_US, MICROSEC_COMPARE_FORMAT);
@@ -122,6 +144,14 @@ void outputsWrite(uint16_t left, uint16_t right, uint16_t throttle) {
   pwm->setCaptureCompare(1, left, MICROSEC_COMPARE_FORMAT);
   pwm->setCaptureCompare(2, right, MICROSEC_COMPARE_FORMAT);
   pwm->setCaptureCompare(3, throttle, MICROSEC_COMPARE_FORMAT);
+}
+
+void applyOutputDriveMode() {
+#if OPEN_DRAIN_OUTPUTS
+  // TIM4 controls pulse timing; the external pull-up creates the 5 V high
+  // level while the STM32 only pulls the line low or releases it.
+  GPIOB->OTYPER |= (1u << 6) | (1u << 7) | (1u << 8);
+#endif
 }
 
 void applyManualControl(bool linkOk) {

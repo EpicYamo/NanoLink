@@ -33,6 +33,20 @@ currently act on that field.
 | PB3 / PB10 | Sensor I2C2 SDA / SCL |
 | PC13 | Onboard link LED (active-low) |
 
+The three PWM signal lines use open-drain outputs with external 2.2 kΩ
+pull-up resistors to the ESC BEC's 5 V rail:
+
+```text
+BEC +5 V -- 2.2 kΩ -- PB6 / left elevon signal
+BEC +5 V -- 2.2 kΩ -- PB7 / right elevon signal
+BEC +5 V -- 2.2 kΩ -- PB8 / ESC signal
+```
+
+These are signal pull-ups, not servo power connections. The STM32 releases the
+line for a high pulse and pulls it low for the low level; its GPIO never drives
+5 V push-pull. Firmware enables this mode by default. Connect BEC ground and
+STM32 ground together.
+
 ### MPU9250 + BMP280 module
 
 | Sensor module | STM32F401 |
