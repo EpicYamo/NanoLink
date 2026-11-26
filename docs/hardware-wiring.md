@@ -95,7 +95,13 @@ radio.
 |---|---|
 | PB0 / PA4 | nRF24 CE / CSN |
 | PA5 / PA6 / PA7 | nRF24 SPI1 SCK / MISO / MOSI |
+| PB6 / PB7 | SSD1306 OLED SCL / SDA (I2C1) |
+| 3V3 / GND | OLED power / common ground |
 | USB-C | Computer USB serial connection |
+
+The ground-station firmware targets a 128×64 SSD1306 I2C display and probes
+addresses `0x3C` and `0x3D`. The OLED uses the F401's default I2C1 pins; its
+I2C pull-ups should be to 3.3 V.
 
 The ground station can be USB-powered. Do not connect aircraft USB while the
 aircraft board is powered from the ESC BEC; some Black Pill variants connect

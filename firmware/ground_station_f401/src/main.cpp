@@ -1,6 +1,8 @@
 #include <Arduino.h>
 #include <SPI.h>
+#include <Wire.h>
 #include <RF24.h>
+#include <U8g2lib.h>
 #include <string.h>
 
 #include "../../common/telemetry_protocol.h"
@@ -15,16 +17,116 @@ constexpr uint32_t STATUS_PERIOD_MS = 1000;
 
 const uint8_t GCS_ADDRESS[6] = "PC01A";
 RF24 radio(PIN_NRF_CE, PIN_NRF_CSN, RF_SPI_HZ);
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C oled(U8G2_R0, U8X8_PIN_NONE);
 
 bool radioReady = false;
 bool radioChipOk = false;
+bool oledReady = false;
 bool haveSequence = false;
+bool haveSensorFrame = false;
+bool haveControlFrame = false;
+bool haveGpsFrame = false;
 uint16_t lastSequence = 0;
 uint32_t receivedPackets = 0;
 uint32_t lostPackets = 0;
 uint32_t autoAckCount = 0;
 uint32_t lastPacketMs = 0;
 uint32_t lastStatusMs = 0;
+uint32_t lastOledMs = 0;
+NanoLinkProtocol::SensorFrame latestSensor{};
+NanoLinkProtocol::ControlFrame latestControl{};
+NanoLinkProtocol::GpsFrame latestGps{};
+uint8_t oledAddress = 0;
+
+void beginOled() {
+  Wire.begin(); // F401 I2C1 default: SDA PB7, SCL PB6.
+  Wire.setClock(100000);
+
+  Wire.beginTransmission(0x3C);
+  if (Wire.endTransmission() == 0) oledAddress = 0x3C;
+  else {
+    Wire.beginTransmission(0x3D);
+    if (Wire.endTransmission() == 0) oledAddress = 0x3D;
+  }
+  if (!oledAddress) return;
+
+  oled.setI2CAddress(static_cast<uint8_t>(oledAddress << 1));
+  oled.begin();
+  oled.setFont(u8g2_font_6x10_tf);
+  oledReady = true;
+}
+
+void renderOled() {
+  if (!oledReady || millis() - lastOledMs < 400) return;
+  lastOledMs = millis();
+  const uint8_t page = (millis() / 2500) % 4;
+
+  oled.clearBuffer();
+  oled.setFont(u8g2_font_6x10_tf);
+  if (page == 0) {
+    oled.drawStr(0, 10, "NanoLink Ground");
+    oled.setCursor(0, 24);
+    oled.print(F("NRF: "));
+    oled.print(radioReady && radioChipOk ? F("READY") : F("ERROR"));
+    oled.setCursor(0, 38);
+    const bool airLink = receivedPackets && (millis() - lastPacketMs < 1500);
+    oled.print(F("AIR: "));
+    oled.print(airLink ? F("LIVE") : F("NO AIR DATA"));
+    oled.setCursor(0, 52);
+    oled.print(F("RX ")); oled.print(receivedPackets);
+    oled.print(F(" LOST ")); oled.print(lostPackets);
+    oled.setCursor(0, 63);
+    oled.print(F("ACK ")); oled.print(autoAckCount);
+  } else if (page == 1) {
+    oled.drawStr(0, 10, "Aircraft RC Inputs");
+    if (!haveControlFrame) {
+      oled.drawStr(0, 30, "No aircraft packets");
+      oled.drawStr(0, 44, "RC data unavailable");
+    } else {
+      const bool rcOk = latestControl.flags & NanoLinkProtocol::CONTROL_RC_VALID;
+      oled.setCursor(0, 24); oled.print(F("RC: ")); oled.print(rcOk ? F("OK") : F("LOST"));
+      oled.print(F(" Age ")); oled.print(latestControl.rcAgeMs); oled.print(F("ms"));
+      oled.setCursor(0, 38); oled.print(F("T ")); oled.print(latestControl.throttleUs);
+      oled.print(F(" A ")); oled.print(latestControl.aileronUs);
+      oled.setCursor(0, 52); oled.print(F("E ")); oled.print(latestControl.elevatorUs);
+      oled.print(F(" ARM ")); oled.print((latestControl.flags & NanoLinkProtocol::CONTROL_ARMED) ? F("ON") : F("OFF"));
+      oled.setCursor(0, 63); oled.print(F("MODE ")); oled.print(latestControl.throttleMode);
+    }
+  } else if (page == 2) {
+    oled.drawStr(0, 10, "Aircraft Sensors");
+    oled.setCursor(0, 24); oled.print(F("IMU: "));
+    oled.print(haveSensorFrame && (latestSensor.flags & NanoLinkProtocol::SENSOR_IMU_OK) ? F("OK") : F("NO DATA"));
+    oled.print(F(" MAG: "));
+    oled.print(haveSensorFrame && (latestSensor.flags & NanoLinkProtocol::SENSOR_MAG_OK) ? F("OK") : F("--"));
+    oled.setCursor(0, 38); oled.print(F("BARO: "));
+    oled.print(haveSensorFrame && (latestSensor.flags & NanoLinkProtocol::SENSOR_BARO_OK) ? F("OK") : F("NO DATA"));
+    if (haveSensorFrame) {
+      oled.print(F(" ")); oled.print(latestSensor.temperatureCentiC / 100.0f, 1); oled.print(F("C"));
+    }
+    const bool gpsStream = haveGpsFrame && (latestGps.flags & NanoLinkProtocol::GPS_STREAM_OK);
+    const bool gpsFix = haveGpsFrame && (latestGps.flags & NanoLinkProtocol::GPS_FIX_OK);
+    oled.setCursor(0, 52); oled.print(F("GPS: "));
+    oled.print(gpsFix ? F("FIX") : (gpsStream ? F("SEARCH") : (haveGpsFrame ? F("NO NMEA") : F("UNKNOWN"))));
+    oled.print(F(" SAT ")); oled.print(haveGpsFrame ? latestGps.satellites : 0);
+    oled.setCursor(0, 63); oled.print(F("HDOP "));
+    if (haveGpsFrame) oled.print(latestGps.hdopCenti / 100.0f, 2);
+    else oled.print(F("--"));
+  } else {
+    oled.drawStr(0, 10, "GPS Position");
+    const bool gpsFix = haveGpsFrame && (latestGps.flags & NanoLinkProtocol::GPS_FIX_OK);
+    if (!gpsFix) {
+      oled.drawStr(0, 30, haveGpsFrame ? "Waiting for GPS fix" : "No aircraft GPS data");
+      oled.setCursor(0, 48); oled.print(F("Satellites "));
+      oled.print(haveGpsFrame ? latestGps.satellites : 0);
+    } else {
+      oled.setCursor(0, 27); oled.print(F("Lat ")); oled.print(latestGps.latitudeE7 / 10000000.0f, 5);
+      oled.setCursor(0, 41); oled.print(F("Lon ")); oled.print(latestGps.longitudeE7 / 10000000.0f, 5);
+      oled.setCursor(0, 55); oled.print(F("Alt ")); oled.print(latestGps.altitudeMm / 1000.0f, 1);
+      oled.print(F("m Sat ")); oled.print(latestGps.satellites);
+    }
+  }
+  oled.sendBuffer();
+}
 
 void printBool(bool value) { Serial.print(value ? F("true") : F("false")); }
 
@@ -50,6 +152,8 @@ void printHex(const uint8_t *data, uint8_t length) {
 }
 
 void printSensorFrame(const NanoLinkProtocol::SensorFrame &frame, const uint8_t *raw) {
+  latestSensor = frame;
+  haveSensorFrame = true;
   printCommon(NanoLinkProtocol::TYPE_SENSORS, frame.header.sequence);
   printHex(raw, 32);
   Serial.print(F(",\"flags\":")); Serial.print(frame.flags);
@@ -68,6 +172,8 @@ void printSensorFrame(const NanoLinkProtocol::SensorFrame &frame, const uint8_t 
 }
 
 void printControlFrame(const NanoLinkProtocol::ControlFrame &frame, const uint8_t *raw) {
+  latestControl = frame;
+  haveControlFrame = true;
   printCommon(NanoLinkProtocol::TYPE_CONTROL, frame.header.sequence);
   printHex(raw, 32);
   Serial.print(F(",\"flags\":")); Serial.print(frame.flags);
@@ -90,6 +196,8 @@ void printControlFrame(const NanoLinkProtocol::ControlFrame &frame, const uint8_
 }
 
 void printGpsFrame(const NanoLinkProtocol::GpsFrame &frame, const uint8_t *raw) {
+  latestGps = frame;
+  haveGpsFrame = true;
   printCommon(NanoLinkProtocol::TYPE_GPS, frame.header.sequence);
   printHex(raw, 32);
   Serial.print(F(",\"flags\":")); Serial.print(frame.flags);
@@ -170,6 +278,7 @@ void setup() {
   const uint32_t serialWaitStart = millis();
   while (!Serial && millis() - serialWaitStart < 1500) delay(10);
 
+  beginOled();
   radioReady = radio.begin();
   if (radioReady) {
     radioChipOk = radio.isChipConnected();
@@ -188,6 +297,7 @@ void loop() {
   if (radioReady) {
     while (radio.available()) handleRadioPacket();
   }
+  renderOled();
   if (millis() - lastStatusMs >= STATUS_PERIOD_MS) {
     lastStatusMs = millis();
     emitStatus();

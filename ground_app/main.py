@@ -266,7 +266,7 @@ class MainWindow(QMainWindow):
         grid.setContentsMargins(0, 0, 0, 0)
         self.tiles = {
             "serial": StatusTile("USB serial"),
-            "radio": StatusTile("nRF24 link"),
+            "radio": StatusTile("nRF24 / air link"),
             "rc": StatusTile("RC input"),
             "imu": StatusTile("MPU9250"),
             "baro": StatusTile("BMP280"),
@@ -517,22 +517,39 @@ class MainWindow(QMainWindow):
             if "radio_ready" in radio:
                 ready = bool(radio.get("radio_ready")) and bool(radio.get("radio_chip_ok"))
                 age = int(radio.get("telemetry_age_ms", 65535) or 65535)
-                live = ready and age < 1500
+                has_air_data = self.store.last_rf_packet_at > 0
+                live = ready and has_air_data and age < 1500
                 air_tx = ""
                 if "air_tx_ok" in radio or "air_tx_failed" in radio:
                     air_tx = f" · aircraft TX {radio.get('air_tx_ok', 0)}/{radio.get('air_tx_failed', 0)} failed"
+                radio_value = (
+                    "AIR LINK LIVE" if live else
+                    "RADIO READY" if ready and not has_air_data else
+                    "TELEMETRY STALE" if ready else
+                    "RADIO INIT FAIL"
+                )
+                radio_detail = (
+                    f"RX {radio.get('rx_packets', 0)} · lost {radio.get('lost_packets', 0)} · "
+                    f"ACK {radio.get('auto_ack_count', 0)} · age {age} ms{air_tx}"
+                    if has_air_data else "Ground radio is ready; no aircraft telemetry received yet"
+                )
                 self.tiles["radio"].set_state(
-                    "LIVE" if live else ("RADIO OK · NO AIR DATA" if ready else "RADIO ERROR"),
-                    f"RX {radio.get('rx_packets', 0)} · lost {radio.get('lost_packets', 0)} · auto-ACK {radio.get('auto_ack_count', 0)} · age {age} ms{air_tx}",
-                    "#55cf9a" if live else "#e2aa57",
+                    radio_value,
+                    radio_detail,
+                    "#55cf9a" if live else ("#7ca7d8" if ready and not has_air_data else "#e2aa57"),
                 )
             rc = self.store.rc
             rc_age = int(rc.get("rc_age_ms", 65535) or 65535)
             since_rc = (time.monotonic() - self.store.last_rc_packet_at) * 1000 if self.store.last_rc_packet_at else 65535
             valid = bool(rc.get("valid")) and rc_age + since_rc < 500
+            rc_value = "RC LIVE" if valid else ("RC LINK LOST" if self.store.last_rc_packet_at else "NO AIRCRAFT DATA")
+            rc_detail = (
+                f"Packets {rc.get('rc_packets', 0)} · age {rc.get('rc_age_ms', '—')} ms"
+                if self.store.last_rc_packet_at else "RC status is unknown until aircraft telemetry arrives"
+            )
             self.tiles["rc"].set_state(
-                "LIVE" if valid else "NO RC DATA",
-                f"Packets {rc.get('rc_packets', 0)} · age {rc.get('rc_age_ms', '—')} ms",
+                rc_value,
+                rc_detail,
                 "#55cf9a" if valid else "#e2aa57",
             )
 
@@ -571,7 +588,9 @@ class MainWindow(QMainWindow):
             and self.store.last_rf_packet_at
             and time.monotonic() - self.store.last_rf_packet_at > 1.5
         )
-        if telemetry_stale:
+        if self.store.source == "ground_station" and not self.store.last_rf_packet_at:
+            self.tiles["gps"].set_state("NO AIRCRAFT DATA", "GPS state is unknown until telemetry arrives", "#7ca7d8")
+        elif telemetry_stale:
             self.tiles["gps"].set_state("STALE", "No recent aircraft packets", "#e27676")
         elif gps.get("fix"):
             self.tiles["gps"].set_state("FIX", f"{gps.get('satellites', 0)} satellites", "#55cf9a")
