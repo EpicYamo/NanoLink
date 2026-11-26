@@ -230,6 +230,8 @@ void emitStatus() {
   Serial.print(F("{\"source\":\"ground_station\",\"kind\":\"link\",\"radio_ready\":"));
   printBool(radioReady);
   Serial.print(F(",\"radio_chip_ok\":")); printBool(radioChipOk);
+  Serial.print(F(",\"oled_ready\":")); printBool(oledReady);
+  Serial.print(F(",\"oled_addr\":")); Serial.print(oledAddress);
   Serial.print(F(",\"rx_packets\":")); Serial.print(receivedPackets);
   Serial.print(F(",\"lost_packets\":")); Serial.print(lostPackets);
   Serial.print(F(",\"auto_ack_count\":")); Serial.print(autoAckCount);

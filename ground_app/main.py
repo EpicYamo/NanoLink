@@ -522,6 +522,10 @@ class MainWindow(QMainWindow):
                 air_tx = ""
                 if "air_tx_ok" in radio or "air_tx_failed" in radio:
                     air_tx = f" · aircraft TX {radio.get('air_tx_ok', 0)}/{radio.get('air_tx_failed', 0)} failed"
+                oled_status = (
+                    f" · OLED 0x{int(radio.get('oled_addr', 0)):02X}"
+                    if radio.get("oled_ready") else " · OLED not detected"
+                )
                 radio_value = (
                     "AIR LINK LIVE" if live else
                     "RADIO READY" if ready and not has_air_data else
@@ -530,8 +534,8 @@ class MainWindow(QMainWindow):
                 )
                 radio_detail = (
                     f"RX {radio.get('rx_packets', 0)} · lost {radio.get('lost_packets', 0)} · "
-                    f"ACK {radio.get('auto_ack_count', 0)} · age {age} ms{air_tx}"
-                    if has_air_data else "Ground radio is ready; no aircraft telemetry received yet"
+                    f"ACK {radio.get('auto_ack_count', 0)} · age {age} ms{air_tx}{oled_status}"
+                    if has_air_data else f"Ground radio ready; no aircraft telemetry yet{oled_status}"
                 )
                 self.tiles["radio"].set_state(
                     radio_value,
