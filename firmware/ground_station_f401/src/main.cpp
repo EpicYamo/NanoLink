@@ -64,10 +64,8 @@ void renderBootScreen() {
   if (!oledReady) return;
   oled.clearBuffer();
   oled.setFont(u8g2_font_6x10_tf);
-  oled.drawFrame(0, 0, 128, 64);
-  oled.drawStr(8, 18, "NanoLink GCS");
-  oled.drawStr(8, 34, "SSD1306 detected");
-  oled.drawStr(8, 50, "Starting radio...");
+  oled.drawStr(22, 30, "NanoLink GCS");
+  oled.drawStr(10, 52, "Waiting for aircraft");
   oled.sendBuffer();
 }
 
@@ -93,18 +91,17 @@ void renderOled() {
   oled.setFont(u8g2_font_6x10_tf);
   if (page == 0) {
     oled.drawStr(0, 10, "NanoLink Ground");
-    oled.setCursor(0, 24);
-    oled.print(F("NRF CHIP: "));
-    oled.print(radioReady && radioChipOk ? F("OK") : F("ERROR"));
-    oled.setCursor(0, 38);
     const bool airLink = receivedPackets && (millis() - lastPacketMs < 1500);
-    oled.print(F("AIR DATA: "));
-    oled.print(airLink ? F("LIVE") : F("NONE"));
-    oled.setCursor(0, 52);
+    oled.setCursor(0, 28);
+    oled.print(F("AIRCRAFT: "));
+    oled.print(airLink ? F("CONNECTED") : F("WAITING"));
+    oled.setCursor(0, 46);
+    oled.print(F("RADIO: "));
+    oled.print(radioReady && radioChipOk ? F("READY") : F("ERROR"));
+    oled.setCursor(0, 63);
     oled.print(F("RX ")); oled.print(receivedPackets);
     oled.print(F(" LOST ")); oled.print(lostPackets);
-    oled.setCursor(0, 63);
-    oled.print(F("AUTO ACK ")); oled.print(autoAckCount);
+    oled.print(F(" ACK ")); oled.print(autoAckCount);
   } else if (page == 1) {
     oled.drawStr(0, 10, "Aircraft RC Inputs");
     if (!haveControlFrame) {
