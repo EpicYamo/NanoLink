@@ -60,6 +60,17 @@ void beginOled() {
   oledReady = true;
 }
 
+void renderBootScreen() {
+  if (!oledReady) return;
+  oled.clearBuffer();
+  oled.setFont(u8g2_font_6x10_tf);
+  oled.drawFrame(0, 0, 128, 64);
+  oled.drawStr(8, 18, "NanoLink GCS");
+  oled.drawStr(8, 34, "SSD1306 detected");
+  oled.drawStr(8, 50, "Starting radio...");
+  oled.sendBuffer();
+}
+
 void renderOled() {
   if (!oledReady || millis() - lastOledMs < 400) return;
   lastOledMs = millis();
@@ -307,6 +318,8 @@ void setup() {
   while (!Serial && millis() - serialWaitStart < 1500) delay(10);
 
   beginOled();
+  renderBootScreen();
+  emitStatus(); // Publish USB/OLED health even if radio initialization fails.
 #if !OLED_DIAGNOSTIC
   radioReady = radio.begin();
   if (radioReady) {
