@@ -83,17 +83,17 @@ void renderOled() {
   if (page == 0) {
     oled.drawStr(0, 10, "NanoLink Ground");
     oled.setCursor(0, 24);
-    oled.print(F("NRF: "));
-    oled.print(radioReady && radioChipOk ? F("READY") : F("ERROR"));
+    oled.print(F("NRF CHIP: "));
+    oled.print(radioReady && radioChipOk ? F("OK") : F("ERROR"));
     oled.setCursor(0, 38);
     const bool airLink = receivedPackets && (millis() - lastPacketMs < 1500);
-    oled.print(F("AIR: "));
-    oled.print(airLink ? F("LIVE") : F("NO AIR DATA"));
+    oled.print(F("AIR DATA: "));
+    oled.print(airLink ? F("LIVE") : F("NONE"));
     oled.setCursor(0, 52);
     oled.print(F("RX ")); oled.print(receivedPackets);
     oled.print(F(" LOST ")); oled.print(lostPackets);
     oled.setCursor(0, 63);
-    oled.print(F("ACK ")); oled.print(autoAckCount);
+    oled.print(F("AUTO ACK ")); oled.print(autoAckCount);
   } else if (page == 1) {
     oled.drawStr(0, 10, "Aircraft RC Inputs");
     if (!haveControlFrame) {
@@ -102,19 +102,23 @@ void renderOled() {
     } else {
       const bool rcOk = latestControl.flags & NanoLinkProtocol::CONTROL_RC_VALID;
       oled.setCursor(0, 24); oled.print(F("RC: ")); oled.print(rcOk ? F("OK") : F("LOST"));
-      oled.print(F(" Age ")); oled.print(latestControl.rcAgeMs); oled.print(F("ms"));
+      oled.print(F(" AGE ")); oled.print(latestControl.rcAgeMs); oled.print(F("ms"));
       oled.setCursor(0, 38); oled.print(F("T ")); oled.print(latestControl.throttleUs);
-      oled.print(F(" A ")); oled.print(latestControl.aileronUs);
-      oled.setCursor(0, 52); oled.print(F("E ")); oled.print(latestControl.elevatorUs);
       oled.print(F(" ARM ")); oled.print((latestControl.flags & NanoLinkProtocol::CONTROL_ARMED) ? F("ON") : F("OFF"));
-      oled.setCursor(0, 63); oled.print(F("MODE ")); oled.print(latestControl.throttleMode);
+      oled.setCursor(0, 52); oled.print(F("A ")); oled.print(latestControl.aileronUs);
+      oled.print(F(" E ")); oled.print(latestControl.elevatorUs);
+      const uint8_t mode = latestControl.throttleMode;
+      const uint8_t trims = static_cast<uint8_t>((latestControl.pot1 >> NanoLinkProtocol::POT1_TRIM_SHIFT) & 0x0F);
+      oled.setCursor(0, 63); oled.print(F("MODE "));
+      oled.print(mode == 2 ? F("REFLEX") : F("CRUISE"));
+      oled.print(F(" TRIM ")); oled.print(trims, HEX);
     }
   } else if (page == 2) {
     oled.drawStr(0, 10, "Aircraft Sensors");
     oled.setCursor(0, 24); oled.print(F("IMU: "));
     oled.print(haveSensorFrame && (latestSensor.flags & NanoLinkProtocol::SENSOR_IMU_OK) ? F("OK") : F("NO DATA"));
     oled.print(F(" MAG: "));
-    oled.print(haveSensorFrame && (latestSensor.flags & NanoLinkProtocol::SENSOR_MAG_OK) ? F("OK") : F("--"));
+    oled.print(haveSensorFrame && (latestSensor.flags & NanoLinkProtocol::SENSOR_MAG_OK) ? F("OK") : F("N/A"));
     oled.setCursor(0, 38); oled.print(F("BARO: "));
     oled.print(haveSensorFrame && (latestSensor.flags & NanoLinkProtocol::SENSOR_BARO_OK) ? F("OK") : F("NO DATA"));
     if (haveSensorFrame) {
