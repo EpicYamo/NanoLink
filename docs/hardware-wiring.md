@@ -108,6 +108,30 @@ reception. For nRF/RC checks, use the aircraft flight build with BEC power, the
 Nano transmitter, and the USB-connected ground station. Do not connect USB and
 BEC power to the aircraft controller simultaneously.
 
+## Programming the aircraft controller with ST-Link V2
+
+The STM32F401 uses the four-wire SWD interface:
+
+| ST-Link signal | F401 SWD header |
+|---|---|
+| GND | GND |
+| SWCLK / CLK | SCK |
+| SWDIO / DIO | DIO |
+| 3.3 V target reference/power | 3V3 |
+
+`SCK` here is the SWD clock, not the nRF24 SPI clock. SWO is optional trace
+output and is not needed for programming. Use the ST-Link's 3.3 V pin to power
+the board only if that pin is an output on the exact adapter. Otherwise, power
+the board from one verified source and connect the programmer's target-voltage
+reference as specified by its pinout. Keep USB and BEC disconnected while the
+ST-Link is powering the board.
+
+The USB diagnostic image can be uploaded over SWD with:
+
+```sh
+pio run -d firmware/aircraft_f401 -e bench_usb_stlink -t upload
+```
+
 ## Build commands
 
 Run these commands from the repository root:
