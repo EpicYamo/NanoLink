@@ -5,6 +5,10 @@
 #include <MPU9250_asukiaaa.h>
 #include <Adafruit_BMP280.h>
 #include <IWatchdog.h>
+#include <math.h>
+#include <string.h>
+
+#include "../../common/telemetry_protocol.h"
 
 #ifndef ESC_MIN_US
 #define ESC_MIN_US 1000
@@ -15,40 +19,45 @@
 #ifndef OPEN_DRAIN_OUTPUTS
 #define OPEN_DRAIN_OUTPUTS 1
 #endif
+#ifndef USB_DIAGNOSTIC
+#define USB_DIAGNOSTIC 0
+#endif
+#ifndef ENABLE_GPS
+#define ENABLE_GPS 1
+#endif
 
 namespace {
 
-// Preserve the existing F401 receiver radio and PWM pin assignments.
 constexpr uint8_t PIN_NRF_CE = PB0;
 constexpr uint8_t PIN_NRF_CSN = PA4;
-constexpr uint8_t PIN_LEFT_ELEVON = PB6;  // TIM4_CH1
-constexpr uint8_t PIN_RIGHT_ELEVON = PB7; // TIM4_CH2
-constexpr uint8_t PIN_ESC = PB8;          // TIM4_CH3
+constexpr uint8_t PIN_LEFT_ELEVON = PB6;
+constexpr uint8_t PIN_RIGHT_ELEVON = PB7;
+constexpr uint8_t PIN_ESC = PB8;
 constexpr uint8_t PIN_LED = PC13;
 
 constexpr uint8_t RF_CHANNEL = 90;
 constexpr uint32_t RF_SPI_HZ = 4000000UL;
 constexpr uint32_t RC_TIMEOUT_MS = 500;
-constexpr uint32_t SENSOR_PERIOD_MS = 20;    // 50 Hz sensor sampling
-constexpr uint32_t TELEMETRY_PERIOD_MS = 100; // 10 Hz radio telemetry
+constexpr uint32_t SENSOR_PERIOD_MS = 20;
+constexpr uint32_t RADIO_TELEMETRY_PERIOD_MS = 30;
+constexpr uint32_t USB_DIAGNOSTIC_PERIOD_MS = 100;
 constexpr uint16_t SERVO_CENTER_US = 1500;
-constexpr uint16_t MIX_LIMIT_US = 350; // matches the transmitter's 1150-1850 low rate
+constexpr uint16_t MIX_LIMIT_US = 350;
+constexpr uint32_t GPS_BAUD = 9600;
 
 const uint8_t RC_ADDRESS[6] = "NANO1";
 const uint8_t GCS_ADDRESS[6] = "PC01A";
 
-// I2C2 avoids the existing PWM pins PB6/PB7/PB8.
-// STM32duino TwoWire constructor order is SDA, SCL.
+// I2C2: SDA PB3, SCL PB10. GPS USART1: RX PA10, TX PA9.
 TwoWire SensorWire(PB3, PB10);
+HardwareSerial &gpsSerial = Serial1; // USART1: RX PA10, TX PA9
 MPU9250_asukiaaa imu;
 Adafruit_BMP280 barometer(&SensorWire);
 RF24 radio(PIN_NRF_CE, PIN_NRF_CSN, RF_SPI_HZ);
 HardwareTimer *pwm = nullptr;
 
 #if OPEN_DRAIN_OUTPUTS
-// The servo/ESC signal lines are pulled up to the BEC's 5 V rail through
-// external resistors. Hold them low before normal startup so the pull-ups do
-// not present a steady high level while the ESC is booting.
+// Hold the 5 V pull-up PWM lines low during MCU startup.
 struct EarlyOutputsLow {
   EarlyOutputsLow() {
     RCC->AHB1ENR |= RCC_AHB1ENR_GPIOBEN;
@@ -70,44 +79,43 @@ struct __attribute__((packed)) RcPacket {
   uint16_t pot2;
   uint8_t switch2State;
 };
-static_assert(sizeof(RcPacket) == 12, "RC packet must match the existing Nano transmitter");
+static_assert(sizeof(RcPacket) == 12, "RC packet must match the Nano transmitter");
 
-enum TelemetryFlags : uint8_t {
-  FLAG_IMU_OK = 1u << 0,
-  FLAG_BARO_OK = 1u << 1,
-  FLAG_RC_OK = 1u << 2,
-  FLAG_ARMED = 1u << 3,
+struct GpsState {
+  bool streamSeen = false;
+  bool fix = false;
+  uint8_t fixType = 0;
+  uint8_t satellites = 0;
+  uint16_t hdopCenti = 0;
+  int32_t latitudeE7 = 0;
+  int32_t longitudeE7 = 0;
+  int32_t altitudeMm = 0;
+  uint16_t speedCms = 0;
+  uint16_t courseCentiDeg = 0;
+  uint32_t lastSentenceMs = 0;
 };
-
-struct __attribute__((packed)) TelemetryPacket {
-  uint16_t magic;
-  uint8_t version;
-  uint8_t flags;
-  uint16_t sequence;
-  int16_t accelMg[3];
-  int16_t gyroCentiDps[3];
-  int16_t magCounts[3];
-  uint32_t pressurePa;
-  int16_t temperatureCentiC;
-  uint16_t rcAgeMs;
-};
-static_assert(sizeof(TelemetryPacket) == 32, "Telemetry must fit one nRF24 payload");
-
-constexpr uint16_t TELEMETRY_MAGIC = 0x4E4C; // 'NL'
-constexpr uint8_t TELEMETRY_VERSION = 1;
 
 RcPacket rc{};
-TelemetryPacket telemetry{};
+GpsState gps{};
+NanoLinkProtocol::SensorFrame sensorData{};
 bool radioReady = false;
 bool imuReady = false;
 bool barometerReady = false;
 bool haveRcPacket = false;
 bool haveImuSample = false;
+bool haveMagSample = false;
 bool haveBaroSample = false;
 uint16_t telemetrySequence = 0;
+uint16_t telemetryTxOk = 0;
+uint16_t telemetryTxFailed = 0;
+uint16_t rcPacketCount = 0;
 uint32_t lastRcPacketMs = 0;
 uint32_t lastSensorSampleMs = 0;
-uint32_t lastTelemetryMs = 0;
+uint32_t lastRadioTelemetryMs = 0;
+uint32_t lastUsbDiagnosticMs = 0;
+uint8_t telemetryTypeIndex = 0;
+char nmeaLine[120]{};
+uint8_t nmeaLength = 0;
 
 int16_t clampToInt16(float value) {
   if (value > 32767.0f) return 32767;
@@ -115,17 +123,21 @@ int16_t clampToInt16(float value) {
   return static_cast<int16_t>(value);
 }
 
-uint16_t clampPulse(int32_t value, uint16_t low, uint16_t high) {
-  if (value < low) return low;
-  if (value > high) return high;
-  return static_cast<uint16_t>(value);
-}
-
 uint16_t clampAge(uint32_t ageMs) {
   return ageMs > 65535UL ? 65535U : static_cast<uint16_t>(ageMs);
 }
 
-void applyOutputDriveMode();
+uint16_t clampUnsigned(float value) {
+  if (value <= 0.0f) return 0;
+  if (value >= 65535.0f) return 65535;
+  return static_cast<uint16_t>(value);
+}
+
+void applyOutputDriveMode() {
+#if OPEN_DRAIN_OUTPUTS
+  GPIOB->OTYPER |= (1u << 6) | (1u << 7) | (1u << 8);
+#endif
+}
 
 void outputsBegin() {
   pwm = new HardwareTimer(TIM4);
@@ -146,47 +158,29 @@ void outputsWrite(uint16_t left, uint16_t right, uint16_t throttle) {
   pwm->setCaptureCompare(3, throttle, MICROSEC_COMPARE_FORMAT);
 }
 
-void applyOutputDriveMode() {
-#if OPEN_DRAIN_OUTPUTS
-  // TIM4 controls pulse timing; the external pull-up creates the 5 V high
-  // level while the STM32 only pulls the line low or releases it.
-  GPIOB->OTYPER |= (1u << 6) | (1u << 7) | (1u << 8);
-#endif
-}
-
 void applyManualControl(bool linkOk) {
   if (!linkOk) {
     outputsWrite(SERVO_CENTER_US, SERVO_CENTER_US, ESC_MIN_US);
     return;
   }
 
-  // The transmitter sends channels centered at 1500 us. The signs must be
-  // verified against the actual servo/linkage directions before flight.
   const int32_t roll = static_cast<int32_t>(constrain(rc.aileron, 1000, 2000)) - SERVO_CENTER_US;
   const int32_t pitch = static_cast<int32_t>(constrain(rc.elevator, 1000, 2000)) - SERVO_CENTER_US;
   int32_t leftDelta = pitch + roll;
   int32_t rightDelta = pitch - roll;
-
-  // Preserve the roll/pitch ratio while keeping both mixed outputs in low-rate travel.
   const int32_t largest = max(abs(leftDelta), abs(rightDelta));
   if (largest > MIX_LIMIT_US) {
     leftDelta = leftDelta * MIX_LIMIT_US / largest;
     rightDelta = rightDelta * MIX_LIMIT_US / largest;
   }
 
-  const uint16_t left = clampPulse(SERVO_CENTER_US + leftDelta,
-                                   SERVO_CENTER_US - MIX_LIMIT_US,
-                                   SERVO_CENTER_US + MIX_LIMIT_US);
-  const uint16_t right = clampPulse(SERVO_CENTER_US + rightDelta,
-                                    SERVO_CENTER_US - MIX_LIMIT_US,
-                                    SERVO_CENTER_US + MIX_LIMIT_US);
-
+  const uint16_t left = static_cast<uint16_t>(SERVO_CENTER_US + leftDelta);
+  const uint16_t right = static_cast<uint16_t>(SERVO_CENTER_US + rightDelta);
   uint16_t throttle = ESC_MIN_US;
   if (rc.armed) {
     const uint16_t input = constrain(rc.throttle, 1000, 2000);
     throttle = map(input, 1000, 2000, ESC_MIN_US, ESC_MAX_US);
   }
-
   outputsWrite(left, right, throttle);
 }
 
@@ -212,33 +206,160 @@ bool sensorsBegin() {
                           Adafruit_BMP280::FILTER_X16,
                           Adafruit_BMP280::STANDBY_MS_125);
   }
-
   return imuReady || barometerReady;
 }
 
+float parseNmeaFloat(const char *value) {
+  if (!value) return 0.0f;
+  bool negative = false;
+  if (*value == '-') {
+    negative = true;
+    ++value;
+  } else if (*value == '+') {
+    ++value;
+  }
+  float result = 0.0f;
+  float place = 0.1f;
+  bool fractional = false;
+  for (; *value; ++value) {
+    if (*value == '.') {
+      fractional = true;
+      continue;
+    }
+    if (*value < '0' || *value > '9') break;
+    const uint8_t digit = static_cast<uint8_t>(*value - '0');
+    if (fractional) {
+      result += digit * place;
+      place *= 0.1f;
+    } else {
+      result = result * 10.0f + digit;
+    }
+  }
+  return negative ? -result : result;
+}
+
+int parseNmeaInt(const char *value) {
+  if (!value) return 0;
+  bool negative = false;
+  if (*value == '-') {
+    negative = true;
+    ++value;
+  }
+  int result = 0;
+  while (*value >= '0' && *value <= '9') {
+    result = result * 10 + (*value++ - '0');
+  }
+  return negative ? -result : result;
+}
+
+uint8_t hexNibble(char c) {
+  if (c >= '0' && c <= '9') return static_cast<uint8_t>(c - '0');
+  if (c >= 'A' && c <= 'F') return static_cast<uint8_t>(c - 'A' + 10);
+  if (c >= 'a' && c <= 'f') return static_cast<uint8_t>(c - 'a' + 10);
+  return 0xFF;
+}
+
+float nmeaCoordinate(const char *value, const char *hemisphere) {
+  if (!value || !value[0]) return 0.0f;
+  const float raw = parseNmeaFloat(value);
+  const int degrees = static_cast<int>(raw / 100.0f);
+  float decimal = degrees + (raw - degrees * 100.0f) / 60.0f;
+  if (hemisphere && (hemisphere[0] == 'S' || hemisphere[0] == 'W')) decimal = -decimal;
+  return decimal;
+}
+
+void parseNmeaLine(char *line) {
+  if (!line || line[0] != '$') return;
+  char *star = strchr(line, '*');
+  if (!star || !star[1] || !star[2]) return;
+
+  uint8_t checksum = 0;
+  for (char *p = line + 1; p < star; ++p) checksum ^= static_cast<uint8_t>(*p);
+  char expectedText[3] = {star[1], star[2], '\0'};
+  const uint8_t highNibble = hexNibble(expectedText[0]);
+  const uint8_t lowNibble = hexNibble(expectedText[1]);
+  if (highNibble > 0x0F || lowNibble > 0x0F ||
+      checksum != static_cast<uint8_t>((highNibble << 4) | lowNibble)) return;
+  *star = '\0';
+
+  char *fields[20]{};
+  uint8_t count = 0;
+  fields[count++] = line;
+  for (char *p = line; *p && count < 20; ++p) {
+    if (*p == ',') {
+      *p = '\0';
+      fields[count++] = p + 1;
+    }
+  }
+
+  if (strstr(fields[0], "GGA")) {
+    if (count < 10) return;
+    gps.streamSeen = true;
+    gps.lastSentenceMs = millis();
+    gps.fixType = static_cast<uint8_t>(constrain(parseNmeaInt(fields[6]), 0, 9));
+    gps.fix = gps.fixType > 0;
+    gps.satellites = static_cast<uint8_t>(constrain(parseNmeaInt(fields[7]), 0, 99));
+    gps.hdopCenti = clampUnsigned(parseNmeaFloat(fields[8]) * 100.0f);
+    gps.altitudeMm = static_cast<int32_t>(parseNmeaFloat(fields[9]) * 1000.0f);
+    if (fields[2][0] && fields[4][0]) {
+      gps.latitudeE7 = static_cast<int32_t>(nmeaCoordinate(fields[2], fields[3]) * 10000000.0f);
+      gps.longitudeE7 = static_cast<int32_t>(nmeaCoordinate(fields[4], fields[5]) * 10000000.0f);
+    }
+  } else if (strstr(fields[0], "RMC")) {
+    if (count < 9) return;
+    gps.streamSeen = true;
+    gps.lastSentenceMs = millis();
+    gps.fix = fields[2][0] == 'A';
+    if (gps.fix && fields[3][0] && fields[5][0]) {
+      gps.latitudeE7 = static_cast<int32_t>(nmeaCoordinate(fields[3], fields[4]) * 10000000.0f);
+      gps.longitudeE7 = static_cast<int32_t>(nmeaCoordinate(fields[5], fields[6]) * 10000000.0f);
+    }
+    gps.speedCms = clampUnsigned(parseNmeaFloat(fields[7]) * 51.4444f);
+    gps.courseCentiDeg = clampUnsigned(parseNmeaFloat(fields[8]) * 100.0f);
+  }
+}
+
+void updateGps() {
+#if ENABLE_GPS
+  while (gpsSerial.available()) {
+    const char c = static_cast<char>(gpsSerial.read());
+    if (c == '\r') continue;
+    if (c == '\n') {
+      nmeaLine[nmeaLength] = '\0';
+      parseNmeaLine(nmeaLine);
+      nmeaLength = 0;
+    } else if (nmeaLength < sizeof(nmeaLine) - 1) {
+      nmeaLine[nmeaLength++] = c;
+    } else {
+      nmeaLength = 0;
+    }
+  }
+  if (millis() - gps.lastSentenceMs > 3000) {
+    gps.streamSeen = false;
+    gps.fix = false;
+  }
+#endif
+}
+
 void sampleSensors() {
-  const uint32_t now = millis();
-  if (now - lastSensorSampleMs < SENSOR_PERIOD_MS) return;
-  lastSensorSampleMs = now;
+  if (millis() - lastSensorSampleMs < SENSOR_PERIOD_MS) return;
+  lastSensorSampleMs = millis();
 
   haveImuSample = false;
-  if (imuReady) {
-    const bool accelOk = imu.accelUpdate() == 0;
-    const bool gyroOk = imu.gyroUpdate() == 0;
-    const bool magOk = imu.magUpdate() == 0;
-    if (accelOk && gyroOk) {
-      telemetry.accelMg[0] = clampToInt16(imu.accelX() * 1000.0f);
-      telemetry.accelMg[1] = clampToInt16(imu.accelY() * 1000.0f);
-      telemetry.accelMg[2] = clampToInt16(imu.accelZ() * 1000.0f);
-      telemetry.gyroCentiDps[0] = clampToInt16(imu.gyroX() * 100.0f);
-      telemetry.gyroCentiDps[1] = clampToInt16(imu.gyroY() * 100.0f);
-      telemetry.gyroCentiDps[2] = clampToInt16(imu.gyroZ() * 100.0f);
-      if (magOk) {
-        telemetry.magCounts[0] = imu.magX();
-        telemetry.magCounts[1] = imu.magY();
-        telemetry.magCounts[2] = imu.magZ();
-      }
-      haveImuSample = true;
+  haveMagSample = false;
+  if (imuReady && imu.accelUpdate() == 0 && imu.gyroUpdate() == 0) {
+    sensorData.accelMg[0] = clampToInt16(imu.accelX() * 1000.0f);
+    sensorData.accelMg[1] = clampToInt16(imu.accelY() * 1000.0f);
+    sensorData.accelMg[2] = clampToInt16(imu.accelZ() * 1000.0f);
+    sensorData.gyroCentiDps[0] = clampToInt16(imu.gyroX() * 100.0f);
+    sensorData.gyroCentiDps[1] = clampToInt16(imu.gyroY() * 100.0f);
+    sensorData.gyroCentiDps[2] = clampToInt16(imu.gyroZ() * 100.0f);
+    haveImuSample = true;
+    if (imu.magUpdate() == 0) {
+      sensorData.magCounts[0] = imu.magX();
+      sensorData.magCounts[1] = imu.magY();
+      sensorData.magCounts[2] = imu.magZ();
+      haveMagSample = true;
     }
   }
 
@@ -247,8 +368,8 @@ void sampleSensors() {
     const float temperature = barometer.readTemperature();
     const float pressure = barometer.readPressure();
     if (!isnan(temperature) && !isnan(pressure) && pressure > 0.0f) {
-      telemetry.temperatureCentiC = clampToInt16(temperature * 100.0f);
-      telemetry.pressurePa = static_cast<uint32_t>(pressure);
+      sensorData.temperatureCentiC = clampToInt16(temperature * 100.0f);
+      sensorData.pressurePa = static_cast<uint32_t>(pressure);
       haveBaroSample = true;
     }
   }
@@ -264,26 +385,114 @@ void radioConfigureReceiver() {
   radio.startListening();
 }
 
-void sendTelemetry() {
-  telemetry.magic = TELEMETRY_MAGIC;
-  telemetry.version = TELEMETRY_VERSION;
-  telemetry.flags = 0;
-  if (haveImuSample) telemetry.flags |= FLAG_IMU_OK;
-  if (haveBaroSample) telemetry.flags |= FLAG_BARO_OK;
-  if (millis() - lastRcPacketMs <= RC_TIMEOUT_MS) telemetry.flags |= FLAG_RC_OK;
-  if (rc.armed) telemetry.flags |= FLAG_ARMED;
-  telemetry.sequence = telemetrySequence++;
-  telemetry.rcAgeMs = clampAge(millis() - lastRcPacketMs);
+template <typename Frame>
+void fillHeader(Frame &frame, uint8_t type) {
+  frame.header.magic = NanoLinkProtocol::MAGIC;
+  frame.header.version = NanoLinkProtocol::VERSION;
+  frame.header.type = type;
+  frame.header.sequence = telemetrySequence++;
+}
 
-  // The ground station is a receive-only peer in this phase. Keep retries off
-  // so a missing station cannot delay servicing the RC receiver.
+template <typename Frame>
+void transmitFrame(Frame &frame, uint8_t type) {
+  fillHeader(frame, type);
   radio.stopListening();
   radio.openWritingPipe(GCS_ADDRESS);
   radio.setRetries(0, 0);
-  radio.write(&telemetry, sizeof(telemetry));
+  if (radio.write(&frame, sizeof(frame))) ++telemetryTxOk;
+  else ++telemetryTxFailed;
   radioConfigureReceiver();
-  lastTelemetryMs = millis();
 }
+
+void sendRadioTelemetry(bool linkOk) {
+  const uint8_t type = telemetryTypeIndex++ % 3;
+  if (type == 0) {
+    NanoLinkProtocol::SensorFrame frame{};
+    frame.flags = (haveImuSample ? NanoLinkProtocol::SENSOR_IMU_OK : 0) |
+                  (haveMagSample ? NanoLinkProtocol::SENSOR_MAG_OK : 0) |
+                  (haveBaroSample ? NanoLinkProtocol::SENSOR_BARO_OK : 0);
+    memcpy(frame.accelMg, sensorData.accelMg, sizeof(frame.accelMg));
+    memcpy(frame.gyroCentiDps, sensorData.gyroCentiDps, sizeof(frame.gyroCentiDps));
+    memcpy(frame.magCounts, sensorData.magCounts, sizeof(frame.magCounts));
+    frame.pressurePa = sensorData.pressurePa;
+    frame.temperatureCentiC = sensorData.temperatureCentiC;
+    transmitFrame(frame, NanoLinkProtocol::TYPE_SENSORS);
+  } else if (type == 1) {
+    NanoLinkProtocol::ControlFrame frame{};
+    frame.flags = (linkOk ? NanoLinkProtocol::CONTROL_RC_VALID : 0) |
+                  (rc.armed ? NanoLinkProtocol::CONTROL_ARMED : 0) |
+                  (gps.streamSeen ? NanoLinkProtocol::CONTROL_GPS_STREAM : 0) |
+                  (gps.fix ? NanoLinkProtocol::CONTROL_GPS_FIX : 0);
+    frame.throttleUs = rc.throttle;
+    frame.aileronUs = rc.aileron;
+    frame.elevatorUs = rc.elevator;
+    frame.pot1 = rc.pot1;
+    frame.pot2 = rc.pot2;
+    frame.throttleMode = rc.switch2State;
+    frame.rcAgeMs = haveRcPacket ? clampAge(millis() - lastRcPacketMs) : 65535;
+    frame.rcPackets = rcPacketCount;
+    frame.telemetryTxOk = telemetryTxOk;
+    frame.telemetryTxFailed = telemetryTxFailed;
+    transmitFrame(frame, NanoLinkProtocol::TYPE_CONTROL);
+  } else {
+    NanoLinkProtocol::GpsFrame frame{};
+    frame.flags = (gps.streamSeen ? NanoLinkProtocol::GPS_STREAM_OK : 0) |
+                  (gps.fix ? NanoLinkProtocol::GPS_FIX_OK : 0);
+    frame.fixType = gps.fixType;
+    frame.satellites = gps.satellites;
+    frame.hdopCenti = gps.hdopCenti;
+    frame.latitudeE7 = gps.latitudeE7;
+    frame.longitudeE7 = gps.longitudeE7;
+    frame.altitudeMm = gps.altitudeMm;
+    frame.speedCms = gps.speedCms;
+    frame.courseCentiDeg = gps.courseCentiDeg;
+    transmitFrame(frame, NanoLinkProtocol::TYPE_GPS);
+  }
+}
+
+#if USB_DIAGNOSTIC
+void printJsonBool(bool value) { Serial.print(value ? F("true") : F("false")); }
+
+void printUsbDiagnostic(bool nrfChipOk) {
+  Serial.print(F("{\"source\":\"aircraft_usb\",\"kind\":\"sample\",\"uptime_ms\":"));
+  Serial.print(millis());
+  Serial.print(F(",\"nrf\":{\"enabled\":false,\"chip_ok\":"));
+  printJsonBool(nrfChipOk);
+  Serial.print(F("},\"rc\":{\"valid\":false,\"age_ms\":65535,\"throttle_us\":0,\"aileron_us\":0,\"elevator_us\":0,\"armed\":false,\"throttle_mode\":0},\"imu\":{\"ok\":"));
+  printJsonBool(haveImuSample);
+  Serial.print(F(",\"mag_ok\":"));
+  printJsonBool(haveMagSample);
+  Serial.print(F(",\"accel_mg\":["));
+  Serial.print(sensorData.accelMg[0]); Serial.print(',');
+  Serial.print(sensorData.accelMg[1]); Serial.print(',');
+  Serial.print(sensorData.accelMg[2]);
+  Serial.print(F("],\"gyro_cdeg_s\":["));
+  Serial.print(sensorData.gyroCentiDps[0]); Serial.print(',');
+  Serial.print(sensorData.gyroCentiDps[1]); Serial.print(',');
+  Serial.print(sensorData.gyroCentiDps[2]);
+  Serial.print(F("],\"mag_counts\":["));
+  Serial.print(sensorData.magCounts[0]); Serial.print(',');
+  Serial.print(sensorData.magCounts[1]); Serial.print(',');
+  Serial.print(sensorData.magCounts[2]);
+  Serial.print(F("]},\"baro\":{\"ok\":"));
+  printJsonBool(haveBaroSample);
+  Serial.print(F(",\"pressure_pa\":")); Serial.print(sensorData.pressurePa);
+  Serial.print(F(",\"temperature_centi_c\":")); Serial.print(sensorData.temperatureCentiC);
+  Serial.print(F("},\"gps\":{\"uart_enabled\":"));
+  printJsonBool(ENABLE_GPS);
+  Serial.print(F(",\"stream\":")); printJsonBool(gps.streamSeen);
+  Serial.print(F(",\"fix\":")); printJsonBool(gps.fix);
+  Serial.print(F(",\"fix_type\":")); Serial.print(gps.fixType);
+  Serial.print(F(",\"satellites\":")); Serial.print(gps.satellites);
+  Serial.print(F(",\"hdop_centi\":")); Serial.print(gps.hdopCenti);
+  Serial.print(F(",\"lat_e7\":")); Serial.print(gps.latitudeE7);
+  Serial.print(F(",\"lon_e7\":")); Serial.print(gps.longitudeE7);
+  Serial.print(F(",\"alt_mm\":")); Serial.print(gps.altitudeMm);
+  Serial.print(F(",\"speed_cms\":")); Serial.print(gps.speedCms);
+  Serial.print(F(",\"course_centi_deg\":")); Serial.print(gps.courseCentiDeg);
+  Serial.println(F("}}"));
+}
+#endif
 
 void updateLed(bool linkOk) {
   digitalWrite(PIN_LED, linkOk ? LOW : ((millis() / 100) & 1) ? HIGH : LOW);
@@ -295,14 +504,27 @@ void setup() {
   pinMode(PIN_LED, OUTPUT);
   digitalWrite(PIN_LED, HIGH);
 
+#if USB_DIAGNOSTIC
+  Serial.begin(115200);
+  const uint32_t serialWaitStart = millis();
+  while (!Serial && millis() - serialWaitStart < 1500) delay(10);
+#else
   outputsBegin();
   applyManualControl(false);
+#endif
+
+#if ENABLE_GPS
+  gpsSerial.begin(GPS_BAUD);
+#endif
   sensorsBegin();
 
+#if !USB_DIAGNOSTIC
   radioReady = radio.begin();
-  if (radioReady) {
-    radioConfigureReceiver();
-  }
+  if (radioReady) radioConfigureReceiver();
+#else
+  radioReady = false;
+#endif
+
   lastRcPacketMs = millis();
   IWatchdog.begin(1000000);
 }
@@ -310,6 +532,7 @@ void setup() {
 void loop() {
   IWatchdog.reload();
   sampleSensors();
+  updateGps();
 
   bool receivedPacket = false;
   if (radioReady) {
@@ -323,21 +546,27 @@ void loop() {
         rc = incoming;
         lastRcPacketMs = millis();
         haveRcPacket = true;
+        ++rcPacketCount;
         receivedPacket = true;
       }
     }
   }
 
   const bool linkOk = haveRcPacket && (millis() - lastRcPacketMs <= RC_TIMEOUT_MS);
+
+#if USB_DIAGNOSTIC
+  if (millis() - lastUsbDiagnosticMs >= USB_DIAGNOSTIC_PERIOD_MS) {
+    lastUsbDiagnosticMs = millis();
+    printUsbDiagnostic(false);
+  }
+#else
   applyManualControl(linkOk);
   updateLed(linkOk);
-
-  // Sending immediately after an RC frame creates a predictable gap before
-  // the handheld's next ~50 Hz frame. The single aircraft radio then returns
-  // to the unchanged RC address.
-  if (receivedPacket && (millis() - lastTelemetryMs >= TELEMETRY_PERIOD_MS)) {
-    sendTelemetry();
+  if (radioReady && receivedPacket && millis() - lastRadioTelemetryMs >= RADIO_TELEMETRY_PERIOD_MS) {
+    sendRadioTelemetry(linkOk);
+    lastRadioTelemetryMs = millis();
   }
+#endif
 
   delay(1);
 }

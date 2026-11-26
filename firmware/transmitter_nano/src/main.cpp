@@ -3,8 +3,13 @@
 #include <EEPROM.h>
 #include <RF24.h>
 
+#include "../../common/telemetry_protocol.h"
+
 #ifndef ENABLE_AUX_POT1
 #define ENABLE_AUX_POT1 0
+#endif
+#ifndef BENCH_RF
+#define BENCH_RF 0
 #endif
 
 namespace {
@@ -68,6 +73,7 @@ uint32_t lastTrimUpdateMs = 0;
 uint32_t lastTrimChangeMs = 0;
 bool trimDirty = false;
 bool radioReady = false;
+uint8_t trimButtonFlags = 0;
 
 int16_t stickPulse(uint16_t raw, int16_t low, int16_t high, bool reverse) {
   return reverse ? map(raw, 0, 1023, high, low)
@@ -128,6 +134,11 @@ void updateTrims() {
   const bool aileronRight = digitalRead(PIN_AILERON_TRIM_RIGHT) == LOW;
   const bool aileronLeft = digitalRead(PIN_AILERON_TRIM_LEFT) == LOW;
   const uint32_t now = millis();
+
+  trimButtonFlags = (elevatorUp ? NanoLinkProtocol::TRIM_ELEVATOR_UP : 0) |
+                    (elevatorDown ? NanoLinkProtocol::TRIM_ELEVATOR_DOWN : 0) |
+                    (aileronRight ? NanoLinkProtocol::TRIM_AILERON_RIGHT : 0) |
+                    (aileronLeft ? NanoLinkProtocol::TRIM_AILERON_LEFT : 0);
 
   if (now - lastTrimUpdateMs >= TRIM_REPEAT_MS) {
     lastTrimUpdateMs = now;
@@ -197,8 +208,13 @@ void setup() {
     radio.openWritingPipe(RADIO_ADDRESS);
     radio.setChannel(RADIO_CHANNEL);
     radio.setDataRate(RF24_250KBPS);
+#if BENCH_RF
+    radio.setPALevel(RF24_PA_LOW);
+    radio.setRetries(2, 5);
+#else
     radio.setPALevel(RF24_PA_MAX);
     radio.setRetries(5, 15);
+#endif
     radio.stopListening();
   }
 }
@@ -208,6 +224,8 @@ void loop() {
   readAndFilterSticks();
   updateThrottle();
   updateTrims();
+  packet.pot1 = (packet.pot1 & NanoLinkProtocol::POT1_AUX_MASK) |
+                (static_cast<uint16_t>(trimButtonFlags) << NanoLinkProtocol::POT1_TRIM_SHIFT);
 
   if (radioReady) radio.write(&packet, sizeof(packet));
   delay(20);
