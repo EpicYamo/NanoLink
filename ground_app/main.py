@@ -525,7 +525,15 @@ class MainWindow(QMainWindow):
 
         imu = self.store.imu
         if imu.get("ok"):
-            imu_detail = "accelerometer and gyro streaming"
+            who_am_i = int(imu.get("who_am_i", 0) or 0)
+            if who_am_i == 0x70:
+                imu_detail = "MPU6500-compatible · accel/gyro only"
+            elif self.store.source == "aircraft_usb" and who_am_i:
+                imu_detail = f"WHO_AM_I 0x{who_am_i:02X} · accel/gyro streaming"
+            elif not imu.get("mag_ok", True):
+                imu_detail = "accelerometer/gyro OK · magnetometer unavailable"
+            else:
+                imu_detail = "accelerometer, gyro, and magnetometer streaming"
         elif self.store.source == "aircraft_usb":
             addresses = ", ".join(f"0x{int(addr):02X}" for addr in imu.get("i2c_addresses", [])) or "none"
             who = int(imu.get("who_am_i", 0) or 0)

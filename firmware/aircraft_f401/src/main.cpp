@@ -102,6 +102,7 @@ GpsState gps{};
 NanoLinkProtocol::SensorFrame sensorData{};
 bool radioReady = false;
 bool imuReady = false;
+bool imuHasMagnetometer = false;
 bool barometerReady = false;
 uint8_t imuAddress = 0;
 uint8_t imuWhoAmI = 0;
@@ -218,10 +219,13 @@ bool sensorsBegin() {
   if (imu) {
     imu->setWire(&SensorWire);
     imuIdReadResult = imu->readId(&imuWhoAmI);
-    if (imuIdReadResult == 0 && imuWhoAmI == 0x71) {
+    const bool mpu6500Compatible = imuWhoAmI == 0x70;
+    const bool mpu9250Compatible = imuWhoAmI == 0x71 || imuWhoAmI == 0x73;
+    if (imuIdReadResult == 0 && (mpu6500Compatible || mpu9250Compatible)) {
       imu->beginAccel();
       imu->beginGyro();
-      imu->beginMag();
+      imuHasMagnetometer = mpu9250Compatible;
+      if (imuHasMagnetometer) imu->beginMag();
       imuReady = true;
     }
   }
@@ -263,7 +267,7 @@ void sampleSensors() {
     sensorData.gyroCentiDps[1] = clampToInt16(imu->gyroY() * 100.0f);
     sensorData.gyroCentiDps[2] = clampToInt16(imu->gyroZ() * 100.0f);
     haveImuSample = true;
-    if (imu->magUpdate() == 0) {
+    if (imuHasMagnetometer && imu->magUpdate() == 0) {
       sensorData.magCounts[0] = imu->magX();
       sensorData.magCounts[1] = imu->magY();
       sensorData.magCounts[2] = imu->magZ();

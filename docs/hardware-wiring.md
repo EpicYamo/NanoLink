@@ -61,7 +61,9 @@ On common GY-91-style modules, `3V3` is the onboard regulator output; use the
 module's `VIN`/`VCC` input. Check the markings on the specific breakout board.
 The I2C bus uses 3.3 V logic. MPU9250 addresses are commonly `0x68` or `0x69`;
 BMP280 addresses are commonly `0x76` or `0x77`. The firmware probes both common
-BMP280 addresses.
+BMP280 addresses. The USB diagnostic screen also reports the MPU `WHO_AM_I`
+value: `0x71` identifies an MPU9250, while `0x70` identifies an MPU6500-class
+6-axis device without the MPU9250's integrated magnetometer.
 
 ## Optional GYGPSV1 NEO-8M GPS module
 
