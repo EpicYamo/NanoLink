@@ -7,6 +7,10 @@
 
 #include "../../common/telemetry_protocol.h"
 
+#ifndef OLED_DIAGNOSTIC
+#define OLED_DIAGNOSTIC 0
+#endif
+
 namespace {
 
 constexpr uint8_t PIN_NRF_CE = PB0;
@@ -59,6 +63,19 @@ void beginOled() {
 void renderOled() {
   if (!oledReady || millis() - lastOledMs < 400) return;
   lastOledMs = millis();
+
+#if OLED_DIAGNOSTIC
+  oled.clearBuffer();
+  oled.drawFrame(0, 0, 128, 64);
+  oled.setFont(u8g2_font_6x10_tf);
+  oled.drawStr(8, 14, "OLED TEST: FOUND");
+  oled.setCursor(8, 29); oled.print(F("SSD1306 128x64"));
+  oled.setCursor(8, 43); oled.print(F("I2C address 0x")); oled.print(oledAddress, HEX);
+  oled.drawBox((millis() / 20) % 112 + 8, 52, 8, 6);
+  oled.sendBuffer();
+  return;
+#endif
+
   const uint8_t page = (millis() / 2500) % 4;
 
   oled.clearBuffer();
@@ -228,8 +245,13 @@ void noteSequence(uint16_t sequence) {
 
 void emitStatus() {
   Serial.print(F("{\"source\":\"ground_station\",\"kind\":\"link\",\"radio_ready\":"));
+#if OLED_DIAGNOSTIC
+  printBool(false);
+  Serial.print(F(",\"radio_chip_ok\":false,\"oled_test_mode\":true"));
+#else
   printBool(radioReady);
   Serial.print(F(",\"radio_chip_ok\":")); printBool(radioChipOk);
+#endif
   Serial.print(F(",\"oled_ready\":")); printBool(oledReady);
   Serial.print(F(",\"oled_addr\":")); Serial.print(oledAddress);
   Serial.print(F(",\"rx_packets\":")); Serial.print(receivedPackets);
@@ -281,6 +303,7 @@ void setup() {
   while (!Serial && millis() - serialWaitStart < 1500) delay(10);
 
   beginOled();
+#if !OLED_DIAGNOSTIC
   radioReady = radio.begin();
   if (radioReady) {
     radioChipOk = radio.isChipConnected();
@@ -292,13 +315,16 @@ void setup() {
     radio.setRetries(0, 0);
     radio.startListening();
   }
+#endif
   emitStatus();
 }
 
 void loop() {
+#if !OLED_DIAGNOSTIC
   if (radioReady) {
     while (radio.available()) handleRadioPacket();
   }
+#endif
   renderOled();
   if (millis() - lastStatusMs >= STATUS_PERIOD_MS) {
     lastStatusMs = millis();

@@ -271,6 +271,7 @@ class MainWindow(QMainWindow):
             "imu": StatusTile("MPU9250"),
             "baro": StatusTile("BMP280"),
             "gps": StatusTile("NEO-8M GPS"),
+            "oled": StatusTile("SSD1306 OLED"),
         }
         for col, key in enumerate(self.tiles):
             grid.addWidget(self.tiles[key], 0, col)
@@ -514,7 +515,9 @@ class MainWindow(QMainWindow):
             self.tiles["rc"].set_state("N/A", "RC is not read in USB-only mode", "#7ca7d8")
         elif self.store.source == "ground_station":
             radio = self.store.radio
-            if "radio_ready" in radio:
+            if radio.get("oled_test_mode"):
+                self.tiles["radio"].set_state("RF DISABLED", "OLED-only test firmware", "#7ca7d8")
+            elif "radio_ready" in radio:
                 ready = bool(radio.get("radio_ready")) and bool(radio.get("radio_chip_ok"))
                 age = int(radio.get("telemetry_age_ms", 65535) or 65535)
                 has_air_data = self.store.last_rf_packet_at > 0
@@ -556,6 +559,17 @@ class MainWindow(QMainWindow):
                 rc_detail,
                 "#55cf9a" if valid else "#e2aa57",
             )
+
+        if self.store.source == "aircraft_usb":
+            self.tiles["oled"].set_state("N/A", "OLED is connected to ground station", "#7ca7d8")
+        elif self.store.source == "ground_station" and "oled_ready" in self.store.radio:
+            if self.store.radio.get("oled_ready"):
+                addr = int(self.store.radio.get("oled_addr", 0) or 0)
+                self.tiles["oled"].set_state("FOUND", f"I2C ACK at 0x{addr:02X}", "#55cf9a")
+            else:
+                self.tiles["oled"].set_state("NOT FOUND", "No ACK at 0x3C or 0x3D", "#e27676")
+        else:
+            self.tiles["oled"].set_state("WAITING", "Ground station status not received", "#65758b")
 
         imu = self.store.imu
         if imu.get("ok"):

@@ -48,6 +48,17 @@ The ground-station SSD1306 OLED rotates through radio/packet status, aircraft RC
 inputs, sensor health, and GPS fix/position pages. It distinguishes a detected
 radio module from aircraft telemetry actually arriving.
 
+To isolate a blank display, upload the OLED-only test image:
+
+```sh
+pio run -d firmware/ground_station_f401 -e oled_test -t upload
+```
+
+It disables RF, scans I2C addresses `0x3C` and `0x3D`, displays a test pattern
+when an OLED acknowledges, and reports detection over USB serial. Select Ground
+Station mode in the app to see the detected address. If serial reports an OLED
+address but the panel stays blank, check the panel resolution/controller variant.
+
 The attitude display begins with a short stationary gyro/level calibration.
 Keep the aircraft level and still while the counter runs; use **Calibrate level /
 gyro** to repeat the process after moving or remounting the sensor.
