@@ -61,10 +61,12 @@ class ArtificialHorizon(QWidget):
         self.pitch = 0.0
         self.heading = 0.0
         self.attitude_ok = False
+        self.calibration_status = "WAITING FOR IMU"
         self.setMinimumSize(330, 260)
 
-    def set_attitude(self, roll: float, pitch: float, heading: float, valid: bool) -> None:
+    def set_attitude(self, roll: float, pitch: float, heading: float, valid: bool, status: str) -> None:
         self.roll, self.pitch, self.heading, self.attitude_ok = roll, pitch, heading, valid
+        self.calibration_status = status
         self.update()
 
     def paintEvent(self, _event) -> None:
@@ -96,9 +98,8 @@ class ArtificialHorizon(QWidget):
         painter.setFont(QFont("Sans Serif", 10, QFont.Weight.DemiBold))
         painter.drawText(12, 24, "ROLL / PITCH")
         painter.setFont(QFont("Monospace", 10))
-        state = "WAITING FOR IMU" if not self.attitude_ok else "APPROX. / UNCALIBRATED"
         painter.drawText(12, self.height() - 14,
-                         f"{state}   R {self.roll:+.1f}°  P {self.pitch:+.1f}°  MAG {self.heading:05.1f}°")
+                         f"{self.calibration_status}   R {self.roll:+.1f}°  P {self.pitch:+.1f}°  MAG {self.heading:05.1f}°")
 
 
 class TransmitterView(QWidget):
@@ -279,6 +280,8 @@ class MainWindow(QMainWindow):
         page = QWidget()
         layout = QGridLayout(page)
         self.horizon = ArtificialHorizon()
+        self.calibrate_button = QPushButton("Calibrate level / gyro · keep aircraft still")
+        self.calibrate_button.clicked.connect(self._restart_attitude_calibration)
         self.gps_text = QLabel("Waiting for GPS data")
         self.gps_text.setObjectName("infoPanel")
         self.gps_text.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
@@ -293,7 +296,12 @@ class MainWindow(QMainWindow):
         gps_widget.setLayout(gps_panel)
         self.accel_plot = AxisPlot("Acceleration", "mg", 2000)
         self.gyro_plot = AxisPlot("Angular rate", "centidegrees/s", 20000)
-        layout.addWidget(self.horizon, 0, 0)
+        attitude_panel = QWidget()
+        attitude_layout = QVBoxLayout(attitude_panel)
+        attitude_layout.setContentsMargins(0, 0, 0, 0)
+        attitude_layout.addWidget(self.horizon, 1)
+        attitude_layout.addWidget(self.calibrate_button)
+        layout.addWidget(attitude_panel, 0, 0)
         layout.addWidget(gps_widget, 0, 1)
         layout.addWidget(self.accel_plot, 1, 0)
         layout.addWidget(self.gyro_plot, 1, 1)
@@ -384,6 +392,11 @@ class MainWindow(QMainWindow):
         else:
             self.statusBar().showMessage("Ground-station mode reads nRF telemetry and aircraft-reported RC data")
 
+    def _restart_attitude_calibration(self) -> None:
+        self.attitude.start_calibration()
+        self.horizon.set_attitude(0.0, 0.0, 0.0, False, self.attitude.calibration_status)
+        self.statusBar().showMessage("Keep the aircraft level and motionless while calibration collects samples")
+
     def _read_serial(self) -> None:
         if self.port is None:
             return
@@ -425,7 +438,7 @@ class MainWindow(QMainWindow):
             self.accel_plot.add_values(self.store.imu.get("accel_mg", []), self.store.imu.get("ok", False))
             self.gyro_plot.add_values(self.store.imu.get("gyro_cdeg_s", []), self.store.imu.get("ok", False))
             roll, pitch, heading, valid = self.attitude.update(self.store.imu)
-            self.horizon.set_attitude(roll, pitch, heading, valid)
+            self.horizon.set_attitude(roll, pitch, heading, valid, self.attitude.calibration_status)
         self.transmitter_view.set_rc(self.store.rc)
         self._update_channel_table()
         self._update_gps_panel()

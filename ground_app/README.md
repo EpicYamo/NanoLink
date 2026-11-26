@@ -44,6 +44,10 @@ aircraft-received stick channels, switches, auxiliary controls, and trim-button
 states. **Packets** shows decoded JSON lines and raw nRF24 payload bytes when
 the ground station is the selected source.
 
+The attitude display begins with a short stationary gyro/level calibration.
+Keep the aircraft level and still while the counter runs; use **Calibrate level /
+gyro** to repeat the process after moving or remounting the sensor.
+
 ## Install and run
 
 Python 3.10 or later is recommended.

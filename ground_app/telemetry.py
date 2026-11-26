@@ -115,7 +115,9 @@ class TelemetryStore:
 
 
 class AttitudeEstimator:
-    """Small display-only complementary filter; not flight-control software."""
+    """Display-only complementary filter with a stationary gyro/level calibration."""
+
+    CALIBRATION_SAMPLES = 25
 
     def __init__(self) -> None:
         self.roll = 0.0
@@ -123,6 +125,32 @@ class AttitudeEstimator:
         self.heading = 0.0
         self.ready = False
         self.last_time = 0.0
+        self.start_calibration()
+
+    def start_calibration(self) -> None:
+        self.ready = False
+        self.calibration_count = 0
+        self.gyro_bias = [0.0, 0.0, 0.0]
+        self.gyro_sum = [0.0, 0.0, 0.0]
+        self.roll_sin_sum = 0.0
+        self.roll_cos_sum = 0.0
+        self.pitch_sin_sum = 0.0
+        self.pitch_cos_sum = 0.0
+        self.roll_zero = 0.0
+        self.pitch_zero = 0.0
+        self.roll = 0.0
+        self.pitch = 0.0
+        self.last_time = 0.0
+
+    @property
+    def calibration_status(self) -> str:
+        if self.ready:
+            return "CALIBRATED · DISPLAY ONLY"
+        return f"CALIBRATING {self.calibration_count}/{self.CALIBRATION_SAMPLES} · KEEP LEVEL/STILL"
+
+    @staticmethod
+    def _wrap_degrees(value: float) -> float:
+        return (value + 180.0) % 360.0 - 180.0
 
     def update(self, imu: dict[str, Any]) -> tuple[float, float, float, bool]:
         now = time.monotonic()
@@ -133,16 +161,41 @@ class AttitudeEstimator:
             return self.roll, self.pitch, self.heading, False
 
         ax, ay, az = (float(value) / 1000.0 for value in accel[:3])
+        gyro_dps = [float(value) / 100.0 for value in gyro[:3]]
+        accel_magnitude = math.sqrt(ax * ax + ay * ay + az * az)
+        gyro_magnitude = math.sqrt(sum(value * value for value in gyro_dps))
         roll_acc = math.degrees(math.atan2(ay, az))
         pitch_acc = math.degrees(math.atan2(-ax, math.sqrt(ay * ay + az * az)))
+
         if not self.ready:
-            self.roll, self.pitch = roll_acc, pitch_acc
-            self.ready = True
-        else:
-            dt = min(max(now - self.last_time, 0.0), 0.25)
-            gx, gy = float(gyro[0]) / 100.0, float(gyro[1]) / 100.0
-            self.roll = 0.98 * (self.roll + gx * dt) + 0.02 * roll_acc
-            self.pitch = 0.98 * (self.pitch + gy * dt) + 0.02 * pitch_acc
+            # Only use samples that look stationary: roughly 1 g and low gyro rate.
+            if 0.75 <= accel_magnitude <= 1.25 and gyro_magnitude <= 8.0:
+                self.calibration_count += 1
+                for index in range(3):
+                    self.gyro_sum[index] += gyro_dps[index]
+                self.roll_sin_sum += math.sin(math.radians(roll_acc))
+                self.roll_cos_sum += math.cos(math.radians(roll_acc))
+                self.pitch_sin_sum += math.sin(math.radians(pitch_acc))
+                self.pitch_cos_sum += math.cos(math.radians(pitch_acc))
+
+            if self.calibration_count >= self.CALIBRATION_SAMPLES:
+                count = float(self.calibration_count)
+                self.gyro_bias = [value / count for value in self.gyro_sum]
+                self.roll_zero = math.degrees(math.atan2(self.roll_sin_sum, self.roll_cos_sum))
+                self.pitch_zero = math.degrees(math.atan2(self.pitch_sin_sum, self.pitch_cos_sum))
+                self.roll = 0.0
+                self.pitch = 0.0
+                self.ready = True
+                self.last_time = now
+            return self.roll, self.pitch, self.heading, self.ready
+
+        dt = min(max(now - self.last_time, 0.0), 0.25)
+        corrected_roll = gyro_dps[0] - self.gyro_bias[0]
+        corrected_pitch = gyro_dps[1] - self.gyro_bias[1]
+        roll_reference = self._wrap_degrees(roll_acc - self.roll_zero)
+        pitch_reference = self._wrap_degrees(pitch_acc - self.pitch_zero)
+        self.roll = 0.98 * (self.roll + corrected_roll * dt) + 0.02 * roll_reference
+        self.pitch = 0.98 * (self.pitch + corrected_pitch * dt) + 0.02 * pitch_reference
 
         if imu.get("mag_ok") and len(mag) >= 2:
             mx, my = float(mag[0]), float(mag[1])

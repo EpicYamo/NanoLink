@@ -42,14 +42,17 @@ class TelemetryStoreTests(unittest.TestCase):
 
     def test_attitude_estimator_uses_static_gravity(self):
         estimator = AttitudeEstimator()
-        roll, pitch, _heading, valid = estimator.update({
+        imu = {
             "ok": True,
-            "accel_mg": [0, 0, 1000],
-            "gyro_cdeg_s": [0, 0, 0],
-        })
+            "accel_mg": [0, 0, -1000],
+            "gyro_cdeg_s": [100, 0, 0],
+        }
+        for _ in range(estimator.CALIBRATION_SAMPLES):
+            roll, pitch, _heading, valid = estimator.update(imu)
         self.assertTrue(valid)
         self.assertAlmostEqual(roll, 0.0, delta=0.1)
         self.assertAlmostEqual(pitch, 0.0, delta=0.1)
+        self.assertEqual(estimator.calibration_status, "CALIBRATED · DISPLAY ONLY")
 
 
 if __name__ == "__main__":
