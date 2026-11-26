@@ -16,8 +16,12 @@ Connect the aircraft F401 directly to the computer and build the diagnostic
 firmware:
 
 ```sh
-pio run -d firmware/aircraft_f401 -e bench_usb -t upload
+pio run -d firmware/aircraft_f401 -e bench_usb_dfu -t upload
 ```
+
+Enter the STM32 system bootloader first: hold BOOT0, tap NRST, then release
+BOOT0. The USB-C cable is used for both DFU upload and the later CDC serial
+diagnostic connection.
 
 This USB-only image reads the IMU, barometer, and GPS and emits JSON lines over
 USB serial. It does not initialize the nRF24 receiver or drive the elevon/ESC
