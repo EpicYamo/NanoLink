@@ -2,7 +2,7 @@
 
 NanoLink is an open DIY control and telemetry system for fixed-wing RC aircraft.
 It combines a handheld radio transmitter, an STM32-based aircraft controller,
-and a computer-connected ground station.
+  a computer-connected ground station, and a desktop debug monitor.
 
 ## System
 
@@ -10,8 +10,9 @@ and a computer-connected ground station.
 flowchart LR
   TX[Arduino Nano transmitter] <-->|nRF24 RC link| FC[STM32F401 aircraft controller]
   IMU[MPU9250 + BMP280] -->|I2C| FC
+  FC -->|USB diagnostics\nbench mode| PC[Computer]
   FC -->|nRF24 telemetry| GS[STM32F401 ground station]
-  GS -->|USB serial| PC[Computer]
+  GS -->|USB serial| PC
 ```
 
 - **Transmitter:** reads pilot controls and sends throttle, roll, pitch, arming,
@@ -23,8 +24,9 @@ flowchart LR
   during operation.
 
 The current firmware supports manual RC control, elevon mixing, link-loss
-failsafe, and sensor telemetry. Flight stabilization, GPS, and computer-issued
-flight commands are not part of the current release.
+failsafe, MPU9250/BMP280/GPS data acquisition, and nRF24 telemetry. Flight
+stabilization and computer-issued flight commands are not part of the current
+release.
 
 ## Hardware
 
@@ -45,6 +47,17 @@ Each unit has an independent PlatformIO project:
 
 Build instructions and radio packet details are available in the project
 directories and [system design](docs/system-design.md).
+
+## Desktop debug monitor
+
+`ground_app/` contains a read-only visual monitor with two connection modes:
+
+- **Direct USB diagnostics:** connect the aircraft F401 to inspect IMU, barometer,
+  and GPS data. This diagnostic firmware disables nRF reception and PWM outputs.
+- **Ground-station telemetry:** connect the computer to the ground F401 to inspect
+  radio status, aircraft-reported RC inputs, sensor data, GPS, and packet counters.
+
+See [`ground_app/README.md`](ground_app/README.md) for installation and use.
 
 ## Safety
 

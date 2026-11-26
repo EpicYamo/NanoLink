@@ -1,6 +1,7 @@
 .pio/
 .vscode/
 .idea/
+.venv/
 *.elf
 *.hex
 *.bin

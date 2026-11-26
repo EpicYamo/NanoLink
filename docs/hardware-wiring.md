@@ -18,9 +18,10 @@ aircraft controller, sensors, and computer ground station.
 | D5 / D6 | Aileron trim right / left |
 | D7 / D8 | Reserved switch or trim inputs |
 
-The reference transmitter firmware sends the A5 auxiliary field as zero unless
-`ENABLE_AUX_POT1` is enabled at build time. The aircraft firmware does not
-currently act on that field.
+The low 10 bits of the `pot1` packet field contain the optional A5 auxiliary
+reading (disabled by default); the upper nibble carries the four trim-button
+states. The aircraft currently reports the auxiliary value but does not use it
+to control the airframe.
 
 ## STM32F401 aircraft controller
 
@@ -74,9 +75,9 @@ The GPS uses UART and does not share the sensor's I2C pins:
 | RX | PA9 / USART1 TX |
 
 The module's default baud rate is 9600. For receiving position data only, GPS
-TX, VCC, and GND are sufficient; GPS RX can remain disconnected. The current
-aircraft firmware does not yet parse GPS data. Place the patch antenna facing
-up with a clear view of the sky.
+TX, VCC, and GND are sufficient; GPS RX can remain disconnected. The aircraft
+firmware reads NMEA data on USART1. Place the patch antenna facing up with a
+clear view of the sky.
 
 ## nRF24 radio power and logic
 
@@ -97,6 +98,15 @@ radio.
 The ground station can be USB-powered. Do not connect aircraft USB while the
 aircraft board is powered from the ESC BEC; some Black Pill variants connect
 USB VBUS directly to their 5 V rail.
+
+## USB-only aircraft diagnostics
+
+For sensor/GPS inspection without the ground station, build the aircraft's
+`bench_usb` environment. It powers the F401 from USB and prints JSON lines, but
+does not initialize nRF24 or generate PWM outputs. This mode cannot test RC
+reception. For nRF/RC checks, use the aircraft flight build with BEC power, the
+Nano transmitter, and the USB-connected ground station. Do not connect USB and
+BEC power to the aircraft controller simultaneously.
 
 ## Build commands
 
