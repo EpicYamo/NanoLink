@@ -51,7 +51,9 @@ const uint8_t GCS_ADDRESS[6] = "PC01A";
 // I2C2: SDA PB3, SCL PB10. GPS USART1: RX PA10, TX PA9.
 TwoWire SensorWire(PB3, PB10);
 HardwareSerial &gpsSerial = Serial1; // USART1: RX PA10, TX PA9
-MPU9250_asukiaaa imu;
+MPU9250_asukiaaa imuAt68(0x68);
+MPU9250_asukiaaa imuAt69(0x69);
+MPU9250_asukiaaa *imu = nullptr;
 Adafruit_BMP280 barometer(&SensorWire);
 RF24 radio(PIN_NRF_CE, PIN_NRF_CSN, RF_SPI_HZ);
 HardwareTimer *pwm = nullptr;
@@ -101,6 +103,12 @@ NanoLinkProtocol::SensorFrame sensorData{};
 bool radioReady = false;
 bool imuReady = false;
 bool barometerReady = false;
+uint8_t imuAddress = 0;
+uint8_t imuWhoAmI = 0;
+uint8_t imuIdReadResult = 255;
+uint8_t barometerAddress = 0;
+uint8_t i2cAddresses[16]{};
+uint8_t i2cAddressCount = 0;
 bool haveRcPacket = false;
 bool haveImuSample = false;
 bool haveMagSample = false;
@@ -184,21 +192,47 @@ void applyManualControl(bool linkOk) {
   outputsWrite(left, right, throttle);
 }
 
+bool i2cDevicePresent(uint8_t address) {
+  SensorWire.beginTransmission(address);
+  return SensorWire.endTransmission() == 0;
+}
+
 bool sensorsBegin() {
   SensorWire.begin();
   SensorWire.setClock(100000);
 
-  imu.setWire(&SensorWire);
-  uint8_t imuId = 0;
-  const bool imuIdOk = (imu.readId(&imuId) == 0) && (imuId == 0x71);
-  if (imuIdOk) {
-    imu.beginAccel();
-    imu.beginGyro();
-    imu.beginMag();
-    imuReady = true;
+  i2cAddressCount = 0;
+  for (uint8_t address = 0x08; address <= 0x77; ++address) {
+    if (i2cDevicePresent(address) && i2cAddressCount < sizeof(i2cAddresses)) {
+      i2cAddresses[i2cAddressCount++] = address;
+    }
   }
 
-  barometerReady = barometer.begin(0x76) || barometer.begin(0x77);
+  if (i2cDevicePresent(0x68)) {
+    imu = &imuAt68;
+    imuAddress = 0x68;
+  } else if (i2cDevicePresent(0x69)) {
+    imu = &imuAt69;
+    imuAddress = 0x69;
+  }
+  if (imu) {
+    imu->setWire(&SensorWire);
+    imuIdReadResult = imu->readId(&imuWhoAmI);
+    if (imuIdReadResult == 0 && imuWhoAmI == 0x71) {
+      imu->beginAccel();
+      imu->beginGyro();
+      imu->beginMag();
+      imuReady = true;
+    }
+  }
+
+  if (barometer.begin(0x76)) {
+    barometerAddress = 0x76;
+    barometerReady = true;
+  } else if (barometer.begin(0x77)) {
+    barometerAddress = 0x77;
+    barometerReady = true;
+  }
   if (barometerReady) {
     barometer.setSampling(Adafruit_BMP280::MODE_NORMAL,
                           Adafruit_BMP280::SAMPLING_X2,
@@ -207,6 +241,46 @@ bool sensorsBegin() {
                           Adafruit_BMP280::STANDBY_MS_125);
   }
   return imuReady || barometerReady;
+}
+
+void initializeGps() {
+#if ENABLE_GPS
+  gpsSerial.begin(GPS_BAUD);
+#endif
+}
+
+void sampleSensors() {
+  if (millis() - lastSensorSampleMs < SENSOR_PERIOD_MS) return;
+  lastSensorSampleMs = millis();
+
+  haveImuSample = false;
+  haveMagSample = false;
+  if (imuReady && imu->accelUpdate() == 0 && imu->gyroUpdate() == 0) {
+    sensorData.accelMg[0] = clampToInt16(imu->accelX() * 1000.0f);
+    sensorData.accelMg[1] = clampToInt16(imu->accelY() * 1000.0f);
+    sensorData.accelMg[2] = clampToInt16(imu->accelZ() * 1000.0f);
+    sensorData.gyroCentiDps[0] = clampToInt16(imu->gyroX() * 100.0f);
+    sensorData.gyroCentiDps[1] = clampToInt16(imu->gyroY() * 100.0f);
+    sensorData.gyroCentiDps[2] = clampToInt16(imu->gyroZ() * 100.0f);
+    haveImuSample = true;
+    if (imu->magUpdate() == 0) {
+      sensorData.magCounts[0] = imu->magX();
+      sensorData.magCounts[1] = imu->magY();
+      sensorData.magCounts[2] = imu->magZ();
+      haveMagSample = true;
+    }
+  }
+
+  haveBaroSample = false;
+  if (barometerReady) {
+    const float temperature = barometer.readTemperature();
+    const float pressure = barometer.readPressure();
+    if (!isnan(temperature) && !isnan(pressure) && pressure > 0.0f) {
+      sensorData.temperatureCentiC = clampToInt16(temperature * 100.0f);
+      sensorData.pressurePa = static_cast<uint32_t>(pressure);
+      haveBaroSample = true;
+    }
+  }
 }
 
 float parseNmeaFloat(const char *value) {
@@ -341,40 +415,6 @@ void updateGps() {
 #endif
 }
 
-void sampleSensors() {
-  if (millis() - lastSensorSampleMs < SENSOR_PERIOD_MS) return;
-  lastSensorSampleMs = millis();
-
-  haveImuSample = false;
-  haveMagSample = false;
-  if (imuReady && imu.accelUpdate() == 0 && imu.gyroUpdate() == 0) {
-    sensorData.accelMg[0] = clampToInt16(imu.accelX() * 1000.0f);
-    sensorData.accelMg[1] = clampToInt16(imu.accelY() * 1000.0f);
-    sensorData.accelMg[2] = clampToInt16(imu.accelZ() * 1000.0f);
-    sensorData.gyroCentiDps[0] = clampToInt16(imu.gyroX() * 100.0f);
-    sensorData.gyroCentiDps[1] = clampToInt16(imu.gyroY() * 100.0f);
-    sensorData.gyroCentiDps[2] = clampToInt16(imu.gyroZ() * 100.0f);
-    haveImuSample = true;
-    if (imu.magUpdate() == 0) {
-      sensorData.magCounts[0] = imu.magX();
-      sensorData.magCounts[1] = imu.magY();
-      sensorData.magCounts[2] = imu.magZ();
-      haveMagSample = true;
-    }
-  }
-
-  haveBaroSample = false;
-  if (barometerReady) {
-    const float temperature = barometer.readTemperature();
-    const float pressure = barometer.readPressure();
-    if (!isnan(temperature) && !isnan(pressure) && pressure > 0.0f) {
-      sensorData.temperatureCentiC = clampToInt16(temperature * 100.0f);
-      sensorData.pressurePa = static_cast<uint32_t>(pressure);
-      haveBaroSample = true;
-    }
-  }
-}
-
 void radioConfigureReceiver() {
   radio.openReadingPipe(0, RC_ADDRESS);
   radio.setChannel(RF_CHANNEL);
@@ -458,7 +498,15 @@ void printUsbDiagnostic(bool nrfChipOk) {
   Serial.print(millis());
   Serial.print(F(",\"nrf\":{\"enabled\":false,\"chip_ok\":"));
   printJsonBool(nrfChipOk);
-  Serial.print(F("},\"rc\":{\"valid\":false,\"age_ms\":65535,\"throttle_us\":0,\"aileron_us\":0,\"elevator_us\":0,\"armed\":false,\"throttle_mode\":0},\"imu\":{\"ok\":"));
+  Serial.print(F("},\"rc\":{\"valid\":false,\"age_ms\":65535,\"throttle_us\":0,\"aileron_us\":0,\"elevator_us\":0,\"armed\":false,\"throttle_mode\":0},\"i2c_addresses\":["));
+  for (uint8_t i = 0; i < i2cAddressCount; ++i) {
+    if (i) Serial.print(',');
+    Serial.print(i2cAddresses[i]);
+  }
+  Serial.print(F("],\"imu\":{\"i2c_addr\":")); Serial.print(imuAddress);
+  Serial.print(F(",\"who_am_i\":")); Serial.print(imuWhoAmI);
+  Serial.print(F(",\"id_read_rc\":")); Serial.print(imuIdReadResult);
+  Serial.print(F(",\"ok\":"));
   printJsonBool(haveImuSample);
   Serial.print(F(",\"mag_ok\":"));
   printJsonBool(haveMagSample);
@@ -474,7 +522,8 @@ void printUsbDiagnostic(bool nrfChipOk) {
   Serial.print(sensorData.magCounts[0]); Serial.print(',');
   Serial.print(sensorData.magCounts[1]); Serial.print(',');
   Serial.print(sensorData.magCounts[2]);
-  Serial.print(F("]},\"baro\":{\"ok\":"));
+  Serial.print(F("]},\"baro\":{\"i2c_addr\":")); Serial.print(barometerAddress);
+  Serial.print(F(",\"ok\":"));
   printJsonBool(haveBaroSample);
   Serial.print(F(",\"pressure_pa\":")); Serial.print(sensorData.pressurePa);
   Serial.print(F(",\"temperature_centi_c\":")); Serial.print(sensorData.temperatureCentiC);
@@ -513,9 +562,7 @@ void setup() {
   applyManualControl(false);
 #endif
 
-#if ENABLE_GPS
-  gpsSerial.begin(GPS_BAUD);
-#endif
+  initializeGps();
   sensorsBegin();
 
 #if !USB_DIAGNOSTIC

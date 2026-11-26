@@ -37,6 +37,7 @@ class TelemetryStore:
 
         if self.source == "aircraft_usb":
             self.imu = dict(packet.get("imu", {}))
+            self.imu["i2c_addresses"] = packet.get("i2c_addresses", [])
             self.baro = dict(packet.get("baro", {}))
             self.gps = dict(packet.get("gps", {}))
             self.rc = dict(packet.get("rc", {}))

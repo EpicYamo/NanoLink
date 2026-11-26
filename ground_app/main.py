@@ -524,9 +524,19 @@ class MainWindow(QMainWindow):
             )
 
         imu = self.store.imu
+        if imu.get("ok"):
+            imu_detail = "accelerometer and gyro streaming"
+        elif self.store.source == "aircraft_usb":
+            addresses = ", ".join(f"0x{int(addr):02X}" for addr in imu.get("i2c_addresses", [])) or "none"
+            who = int(imu.get("who_am_i", 0) or 0)
+            addr = int(imu.get("i2c_addr", 0) or 0)
+            id_rc = imu.get("id_read_rc", "—")
+            imu_detail = f"I2C {addresses} · addr 0x{addr:02X} · ID 0x{who:02X} · read {id_rc}"
+        else:
+            imu_detail = "Check sensor telemetry"
         self.tiles["imu"].set_state(
             "OK" if imu.get("ok") else "NO DATA",
-            "samples received" if imu.get("ok") else "Check I2C / sensor power",
+            imu_detail,
             "#55cf9a" if imu.get("ok") else "#e2aa57",
         )
         self.tiles["baro"].set_state(

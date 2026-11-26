@@ -4,6 +4,10 @@ A read-only desktop monitor for the two USB paths used during NanoLink testing.
 It shows sensor health, approximate attitude, GPS status, aircraft-reported RC
 inputs, and packet/link counters.
 
+Direct USB diagnostics also report the I2C address scan and the MPU9250
+`WHO_AM_I` response, which helps distinguish a wiring/address issue from a
+sensor initialization error.
+
 ## Connection modes
 
 ### Direct USB diagnostics
