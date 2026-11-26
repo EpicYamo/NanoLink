@@ -51,6 +51,10 @@ python main.py
 Select the matching connection mode and serial port, then press **Connect**.
 Both firmware paths use 115200 baud and newline-delimited JSON.
 
+On Linux, if opening `/dev/ttyACM*` reports permission denied, ensure the user
+belongs to the `dialout` group and start a fresh login session. Do not run the
+application with `sudo`.
+
 Run the data-model tests with:
 
 ```sh

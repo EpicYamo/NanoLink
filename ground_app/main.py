@@ -18,7 +18,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
-    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QSlider,
@@ -351,13 +350,14 @@ class MainWindow(QMainWindow):
             return
         device = self.port_combo.currentData()
         if not device:
-            QMessageBox.information(self, "No serial port", "Connect an F401 board by USB first.")
+            self.statusBar().showMessage("No serial port selected. Connect an F401 board and refresh ports.")
             return
         try:
             self.port = serial.Serial(device, 115200, timeout=0)
         except serial.SerialException as exc:
-            QMessageBox.critical(self, "Serial connection failed", str(exc))
             self.port = None
+            self.tiles["serial"].set_state("OPEN FAILED", device, "#e27676")
+            self.statusBar().showMessage(f"Could not open {device}: {exc}")
             return
         self.rx_buffer.clear()
         self.store.reset()
