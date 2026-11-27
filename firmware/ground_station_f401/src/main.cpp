@@ -725,6 +725,39 @@ void radioDiagSetup() {
   SPI.begin();
   diagSerial("spi_begin_done");
 
+  // Check what the Arduino SPI actually configured, and fix it if broken.
+  {
+    const uint32_t cr1AfterBegin = SPI1->CR1;
+    const uint32_t srAfterBegin = SPI1->SR;
+    Serial.print(F("{\"source\":\"ground_station\",\"kind\":\"radio_test\",\"stage\":\"after_begin\",\"cr1\":"));
+    Serial.print(cr1AfterBegin);
+    Serial.print(F(",\"sr\":"));
+    Serial.print(srAfterBegin);
+    Serial.print(F(",\"txe\":"));
+    printBool((srAfterBegin & SPI_SR_TXE) != 0);
+    Serial.println('}');
+
+    if (!(srAfterBegin & SPI_SR_TXE)) {
+      // Arduino SPI left SPI1 in a broken state. Force-fix via raw registers
+      // (proven to work by the raw_spi1 stage above).
+      diagSerial("spi_fixup");
+      RCC->APB2ENR |= (1u << 12);
+      // PA5=SCK, PA6=MISO, PA7=MOSI → AF5
+      GPIOA->MODER &= ~((3u << 10) | (3u << 12) | (3u << 14));
+      GPIOA->MODER |=  ((2u << 10) | (2u << 12) | (2u << 14));
+      GPIOA->AFR[0] &= ~((0xFu << 20) | (0xFu << 24) | (0xFu << 28));
+      GPIOA->AFR[0] |=  ((5u << 20) | (5u << 24) | (5u << 28));
+      SPI1->CR1 = 0;
+      SPI1->CR1 = SPI_CR1_MSTR | SPI_CR1_SSM | SPI_CR1_SSI | (5u << 3) | SPI_CR1_SPE;
+      const uint32_t srFixed = SPI1->SR;
+      Serial.print(F("{\"source\":\"ground_station\",\"kind\":\"radio_test\",\"stage\":\"after_fixup\",\"sr\":"));
+      Serial.print(srFixed);
+      Serial.print(F(",\"txe\":"));
+      printBool((srFixed & SPI_SR_TXE) != 0);
+      Serial.println('}');
+    }
+  }
+
   // Raw SPI probe via Arduino SPI class (uses HAL internally).
   diagDraw("5 SPI PROBE", false);
   diagSerial("spi_probe");
