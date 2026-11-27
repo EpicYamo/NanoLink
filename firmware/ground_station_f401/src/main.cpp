@@ -533,8 +533,10 @@ void handleRadioPacket() {
 
 // --- radio diagnostic build --------------------------------------------------
 // Stage-by-stage OLED/serial markers that pinpoint exactly where the normal
-// build freezes on a board. The receive loop is enabled only after 10 seconds
-// so a frozen counter cleanly separates "init hang" from "receive-loop spin".
+// build freezes on a board. Waits for the USB host first so the application
+// records every stage; the raw SPI probe reports the radio's status byte, and
+// the receive loop is enabled only after 10 seconds so a frozen counter
+// cleanly separates "init hang" from "receive-loop spin".
 #if RADIO_DIAGNOSTIC
 uint32_t diagCounter = 0;
 uint32_t diagLastDrawMs = 0;
@@ -569,11 +571,36 @@ void diagDraw(const char *line, bool showCounter) {
 }
 
 void radioDiagSetup() {
-  diagDraw("1 pre-begin", false);
-  diagSerial("pre_begin");
+  // Wait for the USB host so the app can record every stage line.
+  diagDraw("0 WAIT USB", false);
+  const uint32_t usbWaitStart = millis();
+  while (!Serial && millis() - usbWaitStart < 20000) delay(10);
+  diagSerial("usb_ready");
+
+  diagDraw("1 SPI BEGIN", false);
+  diagSerial("spi_begin");
+  SPI.begin();
+  diagSerial("spi_begin_done");
+
+  // Raw SPI probe, independent of the RF24 library: NOP returns STATUS.
+  diagDraw("2 SPI PROBE", false);
+  diagSerial("spi_probe");
+  SPI.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));
+  pinMode(PIN_NRF_CSN, OUTPUT);
+  digitalWrite(PIN_NRF_CSN, LOW);
+  const uint8_t probeStatus = SPI.transfer(0xFF);
+  digitalWrite(PIN_NRF_CSN, HIGH);
+  SPI.endTransaction();
+  Serial.print(F("{\"source\":\"ground_station\",\"kind\":\"radio_test\",\"stage\":\"spi_probe_status\",\"status\":"));
+  Serial.print(probeStatus);
+  Serial.println('}');
+  delay(500);
+
+  diagDraw("3 RF24 BEGIN", false);
+  diagSerial("rf24_begin");
   diagBeginOk = radio.begin();
-  diagSerial(diagBeginOk ? "begin_ok" : "begin_fail");
-  diagDraw(diagBeginOk ? "2 BEGIN OK" : "2 BEGIN FAIL", false);
+  diagSerial(diagBeginOk ? "rf24_begin_ok" : "rf24_begin_fail");
+  diagDraw(diagBeginOk ? "4 BEGIN OK" : "4 BEGIN FAIL", false);
   if (!diagBeginOk) return;
   delay(600);
   diagChipOk = radio.isChipConnected();
@@ -585,7 +612,7 @@ void radioDiagSetup() {
   radio.setRetries(0, 0);
   radioStartListening();  // opens both pipes exactly like the normal build
   diagSerial("listening");
-  diagDraw("4 LISTENING", false);
+  diagDraw("5 LISTENING", false);
 }
 
 void radioDiagLoop() {
@@ -596,7 +623,7 @@ void radioDiagLoop() {
   }
   if (millis() - diagLastDrawMs >= 100) {
     diagLastDrawMs = millis();
-    diagDraw(diagRxOn ? "5 RX LOOP" : "3 WAIT 10s", true);
+    diagDraw(diagRxOn ? "7 RX LOOP" : "6 WAIT 10s", true);
   }
   if (millis() - diagLastStatusMs >= 1000) {
     diagLastStatusMs = millis();

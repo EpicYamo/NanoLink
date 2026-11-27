@@ -43,6 +43,7 @@ class TelemetryStore:
         self.radio: dict[str, Any] = {}
         self.command: dict[str, Any] = {}
         self.rc_sniff: dict[str, Any] = {}
+        self.radio_test: dict[str, Any] = {}
         self.last_sniff_at: float = 0.0
         self.last_packet: dict[str, Any] = {}
         self.last_line = ""
@@ -149,6 +150,8 @@ class TelemetryStore:
                 "packets": packet.get("seq", 0),
             }
             self.last_sniff_at = self.updated_at
+        elif kind == "radio_test":
+            self.radio_test = dict(packet)
         elif kind == "command":
             self.command.update({
                 "op": packet.get("op"),

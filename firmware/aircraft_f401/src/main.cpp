@@ -25,6 +25,9 @@
 #ifndef ENABLE_GPS
 #define ENABLE_GPS 1
 #endif
+#ifndef RADIO_DIAGNOSTIC
+#define RADIO_DIAGNOSTIC 0
+#endif
 
 namespace {
 
@@ -647,10 +650,93 @@ void updateLed(bool linkOk) {
 
 } // namespace
 
+// --- aircraft radio diagnostic build -----------------------------------------
+// Mirrors the ground-station radio_test: staged serial markers that pinpoint
+// exactly where radio init dies, reported over USB (no OLED on this board).
+// Run on a known-good radio board (this aircraft flew with its module) to
+// separate a firmware/stack problem from a board/wiring problem.
+#if RADIO_DIAGNOSTIC
+uint32_t diagCounter = 0;
+uint32_t diagLastStatusMs = 0;
+uint32_t diagRcCount = 0;
+bool diagBeginOk = false;
+bool diagRxOn = false;
+
+void diagSerial(const char *stage) {
+  Serial.print(F("{\"source\":\"aircraft_usb\",\"kind\":\"radio_test\",\"stage\":\""));
+  Serial.print(stage);
+  Serial.println(F("\"}"));
+}
+
+void aircraftRadioDiagSetup() {
+  const uint32_t usbWaitStart = millis();
+  while (!Serial && millis() - usbWaitStart < 20000) delay(10);
+  diagSerial("usb_ready");
+
+  diagSerial("spi_begin");
+  SPI.begin();
+  diagSerial("spi_begin_done");
+
+  diagSerial("spi_probe");
+  SPI.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));
+  pinMode(PIN_NRF_CSN, OUTPUT);
+  digitalWrite(PIN_NRF_CSN, LOW);
+  const uint8_t probeStatus = SPI.transfer(0xFF);
+  digitalWrite(PIN_NRF_CSN, HIGH);
+  SPI.endTransaction();
+  Serial.print(F("{\"source\":\"aircraft_usb\",\"kind\":\"radio_test\",\"stage\":\"spi_probe_status\",\"status\":"));
+  Serial.print(probeStatus);
+  Serial.println('}');
+  delay(500);
+
+  diagSerial("rf24_begin");
+  diagBeginOk = radio.begin();
+  diagSerial(diagBeginOk ? "rf24_begin_ok" : "rf24_begin_fail");
+  if (diagBeginOk) {
+    radioConfigureReceiver();  // opens the RC and command pipes
+    diagSerial("listening");
+  }
+}
+
+void aircraftRadioDiagLoop() {
+  ++diagCounter;
+  if (!diagRxOn && millis() >= 10000) {
+    diagRxOn = true;
+    diagSerial("rx_on");
+  }
+  if (millis() - diagLastStatusMs >= 1000) {
+    diagLastStatusMs = millis();
+    Serial.print(F("{\"source\":\"aircraft_usb\",\"kind\":\"radio_test\",\"stage\":\"running\",\"counter\":"));
+    Serial.print(diagCounter);
+    Serial.print(F(",\"rx_on\":")); Serial.print(diagRxOn ? F("true") : F("false"));
+    Serial.print(F(",\"rc\":")); Serial.print(diagRcCount);
+    Serial.println('}');
+  }
+  if (diagRxOn && diagBeginOk) {
+    uint8_t pipe = 0;
+    while (radio.available(&pipe)) {
+      if (pipe == 1) {
+        NanoLinkProtocol::CommandFrame command{};
+        radio.read(&command, sizeof(command));
+      } else {
+        RcPacket incoming{};
+        radio.read(&incoming, sizeof(incoming));
+        ++diagRcCount;
+      }
+    }
+  }
+}
+#endif
+// -----------------------------------------------------------------------------
+
 void setup() {
   pinMode(PIN_LED, OUTPUT);
   digitalWrite(PIN_LED, HIGH);
 
+#if RADIO_DIAGNOSTIC
+  Serial.begin(115200);
+  aircraftRadioDiagSetup();
+#else
 #if USB_DIAGNOSTIC
   Serial.begin(115200);
   const uint32_t serialWaitStart = millis();
@@ -672,9 +758,14 @@ void setup() {
 
   lastRcPacketMs = millis();
   IWatchdog.begin(1000000);
+#endif
 }
 
 void loop() {
+#if RADIO_DIAGNOSTIC
+  aircraftRadioDiagLoop();
+  return;
+#endif
   IWatchdog.reload();
   sampleSensors();
   updateGps();
