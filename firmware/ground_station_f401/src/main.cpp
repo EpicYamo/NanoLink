@@ -653,14 +653,80 @@ void radioDiagSetup() {
   Serial.println('}');
   delay(500);
 
+  // Raw SPI1 register probe — completely bypasses HAL and Arduino SPI class.
+  // This tells us exactly which layer is broken: if the raw registers work,
+  // the bug is in the HAL/Arduino layer. If they don't, the peripheral itself
+  // is dead.
+  diagDraw("3 RAW SPI1", false);
+  diagSerial("raw_spi1");
+  {
+    // Enable SPI1 peripheral clock (bit 12 of RCC_APB2ENR)
+    RCC->APB2ENR |= (1u << 12);
+    delay(1);
+
+    const uint32_t cr1Before = SPI1->CR1;  // before configuring
+
+    // Configure SPI1: Master, Mode 0, 8-bit, prescaler /32 (~2.6MHz)
+    SPI1->CR1 = 0;  // Reset
+    SPI1->CR1 = SPI_CR1_MSTR   // Master mode
+              | SPI_CR1_SSM    // Software slave management
+              | SPI_CR1_SSI    // Internal slave select (drive NSS high)
+              | (5u << 3)      // Baud rate prescaler: 101 = /32
+              | SPI_CR1_SPE;   // SPI enable
+    delay(1);
+
+    const uint32_t cr1After = SPI1->CR1;  // verify write stuck
+    const uint32_t srAfter = SPI1->SR;    // TXE should be set now
+
+    Serial.print(F("{\"source\":\"ground_station\",\"kind\":\"radio_test\",\"stage\":\"raw_spi1_regs\",\"cr1_before\":"));
+    Serial.print(cr1Before);
+    Serial.print(F(",\"cr1_after\":"));
+    Serial.print(cr1After);
+    Serial.print(F(",\"sr_after\":"));
+    Serial.print(srAfter);
+    Serial.print(F(",\"spe_stuck\":"));
+    printBool((cr1After & SPI_CR1_SPE) != 0);
+    Serial.print(F(",\"txe_set\":"));
+    printBool((srAfter & SPI_SR_TXE) != 0);
+    Serial.print('}');
+    Serial.println();
+
+    if (cr1After & SPI_CR1_SPE) {
+      // SPE stuck → peripheral is alive at the register level.
+      // Try a transfer: CSN low, write NOP, read status.
+      digitalWrite(PIN_NRF_CSN, LOW);
+      delayMicroseconds(5);
+      int timeout = 10000;
+      while (!(SPI1->SR & SPI_SR_TXE) && --timeout);
+      if (timeout > 0) {
+        SPI1->DR = 0xFF;  // NOP command
+        timeout = 10000;
+        while (!(SPI1->SR & SPI_SR_RXNE) && --timeout);
+        const uint8_t rawStatus = (timeout > 0) ? (uint8_t)(SPI1->DR) : 0;
+        digitalWrite(PIN_NRF_CSN, HIGH);
+        Serial.print(F("{\"source\":\"ground_station\",\"kind\":\"radio_test\",\"stage\":\"raw_spi1_status\",\"status\":"));
+        Serial.print(rawStatus);
+        Serial.println('}');
+      } else {
+        digitalWrite(PIN_NRF_CSN, HIGH);
+        diagSerial("raw_spi1_txe_timeout");
+      }
+      // Disable SPI1 to leave clean state for the Arduino SPI test
+      SPI1->CR1 &= ~SPI_CR1_SPE;
+    } else {
+      diagSerial("raw_spi1_spe_failed");
+    }
+  }
+  delay(500);
+
   // Hardware SPI from here on.
-  diagDraw("3 SPI BEGIN", false);
+  diagDraw("4 SPI BEGIN", false);
   diagSerial("spi_begin");
   SPI.begin();
   diagSerial("spi_begin_done");
 
-  // Raw SPI probe, independent of the RF24 library: NOP returns STATUS.
-  diagDraw("4 SPI PROBE", false);
+  // Raw SPI probe via Arduino SPI class (uses HAL internally).
+  diagDraw("5 SPI PROBE", false);
   diagSerial("spi_probe");
   SPI.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));
   pinMode(PIN_NRF_CSN, OUTPUT);
@@ -673,11 +739,11 @@ void radioDiagSetup() {
   Serial.println('}');
   delay(500);
 
-  diagDraw("5 RF24 BEGIN", false);
+  diagDraw("6 RF24 BEGIN", false);
   diagSerial("rf24_begin");
   diagBeginOk = radio.begin();
   diagSerial(diagBeginOk ? "rf24_begin_ok" : "rf24_begin_fail");
-  diagDraw(diagBeginOk ? "6 BEGIN OK" : "6 BEGIN FAIL", false);
+  diagDraw(diagBeginOk ? "7 BEGIN OK" : "7 BEGIN FAIL", false);
   if (!diagBeginOk) return;
   delay(600);
   diagChipOk = radio.isChipConnected();
@@ -689,11 +755,11 @@ void radioDiagSetup() {
   radio.setRetries(0, 0);
   radioStartListening();  // opens both pipes exactly like the normal build
   diagSerial("listening");
-  diagDraw("7 LISTENING", false);
+  diagDraw("8 LISTENING", false);
 }
 
 void radioDiagLoop() {
-  if (diagHalted) return;  // keep the PIN FAULT screen visible
+  if (diagHalted) return;
   ++diagCounter;
   if (!diagRxOn && millis() >= 10000) {
     diagRxOn = true;
@@ -701,7 +767,7 @@ void radioDiagLoop() {
   }
   if (millis() - diagLastDrawMs >= 100) {
     diagLastDrawMs = millis();
-    diagDraw(diagRxOn ? "9 RX LOOP" : "8 WAIT 10s", true);
+    diagDraw(diagRxOn ? "10 RX LOOP" : "9 WAIT 10s", true);
   }
   if (millis() - diagLastStatusMs >= 1000) {
     diagLastStatusMs = millis();
