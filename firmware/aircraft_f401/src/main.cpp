@@ -372,10 +372,7 @@ void sampleSensors() {
     haveImuSample = true;
     imuSampleFresh = true;
     if (imuHasMagnetometer && imu->magUpdate() == 0) {
-      sensorData.magCounts[0] = imu->magX();
-      sensorData.magCounts[1] = imu->magY();
-      sensorData.magCounts[2] = imu->magZ();
-      haveMagSample = true;
+      haveMagSample = true;  // mag no longer transmitted; flag retained for future use
     }
   }
 
@@ -734,7 +731,8 @@ void sendTelemetryDump(bool linkOk) {
                   (haveBaroSample ? NanoLinkProtocol::SENSOR_BARO_OK : 0);
     memcpy(frame.accelMg, sensorData.accelMg, sizeof(frame.accelMg));
     memcpy(frame.gyroCentiDps, sensorData.gyroCentiDps, sizeof(frame.gyroCentiDps));
-    memcpy(frame.magCounts, sensorData.magCounts, sizeof(frame.magCounts));
+    frame.attitudeRollCentiDeg = clampToInt16(attitudeRollDeg * 100.0f);
+    frame.attitudePitchCentiDeg = clampToInt16(attitudePitchDeg * 100.0f);
     frame.pressurePa = sensorData.pressurePa;
     frame.temperatureCentiC = sensorData.temperatureCentiC;
     transmitFrame(frame, NanoLinkProtocol::TYPE_SENSORS);
@@ -803,10 +801,6 @@ void printUsbDiagnostic(bool nrfChipOk) {
   Serial.print(sensorData.gyroCentiDps[0]); Serial.print(',');
   Serial.print(sensorData.gyroCentiDps[1]); Serial.print(',');
   Serial.print(sensorData.gyroCentiDps[2]);
-  Serial.print(F("],\"mag_counts\":["));
-  Serial.print(sensorData.magCounts[0]); Serial.print(',');
-  Serial.print(sensorData.magCounts[1]); Serial.print(',');
-  Serial.print(sensorData.magCounts[2]);
   Serial.print(F("]},\"baro\":{\"i2c_addr\":")); Serial.print(barometerAddress);
   Serial.print(F(",\"ok\":"));
   printJsonBool(haveBaroSample);

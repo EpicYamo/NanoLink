@@ -408,8 +408,8 @@ void printSensorFrame(const NanoLinkProtocol::SensorFrame &frame, const uint8_t 
   Serial.print(frame.accelMg[0]); Serial.print(','); Serial.print(frame.accelMg[1]); Serial.print(','); Serial.print(frame.accelMg[2]);
   Serial.print(F("],\"gyro_cdeg_s\":["));
   Serial.print(frame.gyroCentiDps[0]); Serial.print(','); Serial.print(frame.gyroCentiDps[1]); Serial.print(','); Serial.print(frame.gyroCentiDps[2]);
-  Serial.print(F("],\"mag_counts\":["));
-  Serial.print(frame.magCounts[0]); Serial.print(','); Serial.print(frame.magCounts[1]); Serial.print(','); Serial.print(frame.magCounts[2]);
+  Serial.print(F("],\"attitude_roll_cdeg\":")); Serial.print(frame.attitudeRollCentiDeg);
+  Serial.print(F(",\"attitude_pitch_cdeg\":")); Serial.print(frame.attitudePitchCentiDeg);
   Serial.print(F("],\"pressure_pa\":")); Serial.print(frame.pressurePa);
   Serial.print(F(",\"temperature_centi_c\":")); Serial.print(frame.temperatureCentiC);
   Serial.println('}');

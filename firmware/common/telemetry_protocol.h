@@ -61,14 +61,16 @@ struct __attribute__((packed)) Header {
   uint16_t sequence;
 };
 
-// 31 bytes. Acceleration is mg, gyro is centidegrees/second, pressure is Pa,
-// temperature is centidegrees C, and magnetometer values are uncalibrated counts.
+// 29 bytes. Acceleration is mg, gyro is centidegrees/second, pressure is Pa,
+// temperature is centidegrees C. attitudeRoll/Pitch are the aircraft's own
+// self-level estimate in centidegrees (0 = level), sent for bench diagnosis.
 struct __attribute__((packed)) SensorFrame {
   Header header;
   uint8_t flags;
   int16_t accelMg[3];
   int16_t gyroCentiDps[3];
-  int16_t magCounts[3];
+  int16_t attitudeRollCentiDeg;
+  int16_t attitudePitchCentiDeg;
   uint32_t pressurePa;
   int16_t temperatureCentiC;
 };

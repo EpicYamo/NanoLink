@@ -89,7 +89,8 @@ class TelemetryStore:
                 "mag_ok": packet.get("mag_ok", False),
                 "accel_mg": packet.get("accel_mg", [0, 0, 0]),
                 "gyro_cdeg_s": packet.get("gyro_cdeg_s", [0, 0, 0]),
-                "mag_counts": packet.get("mag_counts", [0, 0, 0]),
+                "attitude_roll_cdeg": packet.get("attitude_roll_cdeg", 0),
+                "attitude_pitch_cdeg": packet.get("attitude_pitch_cdeg", 0),
             }
             self.baro = {
                 "ok": packet.get("baro_ok", False),
