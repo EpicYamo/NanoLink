@@ -40,6 +40,7 @@ constexpr uint8_t PIN_ESC = PB8;
 constexpr uint8_t PIN_LED = PC13;
 
 constexpr uint8_t RF_CHANNEL = 90;
+constexpr uint8_t TELEMETRY_CHANNEL = 100;  // aircraft -> GCS telemetry lives on a separate channel
 constexpr uint32_t RF_SPI_HZ = 4000000UL;
 constexpr uint32_t RC_TIMEOUT_MS = 500;
 constexpr uint32_t SENSOR_PERIOD_MS = 20;
@@ -604,9 +605,10 @@ void transmitFrame(Frame &frame, uint8_t type) {
   fillHeader(frame, type);
   radio.stopListening();
   radio.openWritingPipe(GCS_ADDRESS);
+  radio.setChannel(TELEMETRY_CHANNEL);  // telemetry goes on channel 100, RC on 90
   radio.write(&frame, sizeof(frame), true);  // fire-and-forget (no auto-ACK)
   ++telemetryTxOk;
-  radioConfigureReceiver();
+  radioConfigureReceiver();  // back to channel 90 for RC reception
 }
 
 // ---- Ground-station mission commands (stage A: store and acknowledge) -------

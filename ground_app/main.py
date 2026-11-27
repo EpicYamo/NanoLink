@@ -354,10 +354,21 @@ class MainWindow(QMainWindow):
         return page
 
     def _make_controls_tab(self) -> QWidget:
+        from PySide6.QtWidgets import QCheckBox
+
         page = QWidget()
         layout = QHBoxLayout(page)
+
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, 0)
         self.transmitter_view = TransmitterView()
-        layout.addWidget(self.transmitter_view, 2)
+        self.sniffer_toggle = QCheckBox("Switch to transmitter directly")
+        self.sniffer_toggle.toggled.connect(self._sniffer_toggled)
+        left_layout.addWidget(self.transmitter_view, 1)
+        left_layout.addWidget(self.sniffer_toggle)
+        layout.addWidget(left, 2)
+
         self.channel_table = QTableWidget(13, 2)
         self.channel_table.setHorizontalHeaderLabels(["Input", "Received value"])
         self.channel_table.verticalHeader().setVisible(False)
@@ -374,6 +385,20 @@ class MainWindow(QMainWindow):
             self.channel_table.setItem(row, 1, QTableWidgetItem("—"))
         layout.addWidget(self.channel_table, 1)
         return page
+
+    def _sniffer_toggled(self, checked: bool) -> None:
+        if self.port is None or self.mode_combo.currentData() != "ground_station":
+            self.statusBar().showMessage("Connect the ground station first")
+            return
+        cmd = "GCS,listen_sniffer" if checked else "GCS,listen_telemetry"
+        try:
+            self.port.write((cmd + "\n").encode("ascii"))
+            self.statusBar().showMessage(
+                "Ground station listening: transmitter (90)" if checked else
+                "Ground station listening: telemetry (100)"
+            )
+        except serial.SerialException as exc:
+            self.statusBar().showMessage(f"Serial write failed: {exc}")
 
     def _make_map_tab(self) -> QWidget:
         from PySide6.QtWidgets import QCheckBox, QDoubleSpinBox, QSpinBox
