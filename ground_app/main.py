@@ -143,9 +143,13 @@ class TransmitterView(QWidget):
         throttle = int(self.rc.get("throttle_us", 1000) or 1000)
         roll = int(self.rc.get("aileron_us", 1500) or 1500)
         pitch = int(self.rc.get("elevator_us", 1500) or 1500)
-        ty = cy + int((1.0 - max(0.0, min(1.0, (throttle - 1000) / 1000))) * radius * 0.8 - radius * 0.4)
-        px = rx + int(self._stick_point(roll, 1500, 500) * radius * 0.8)
-        py = cy - int(self._stick_point(pitch, 1500, 500) * radius * 0.8)
+
+        # Transmitter firmware reverses both axes (REVERSE_AILERON/ELEVATOR = true),
+        # so negate to show the pilot's physical stick position.
+        # Span 350 matches the transmitter's actual travel (1150-1850, center 1500).
+        ty = cy + int((1.0 - max(0.0, min(1.0, (throttle - 1000) / 1000))) * radius - radius)
+        px = rx - int(max(-1.0, min(1.0, (1500 - roll) / 350.0)) * radius)
+        py = cy + int(max(-1.0, min(1.0, (1500 - pitch) / 350.0)) * radius)
         for x, y in ((lx, ty), (px, py)):
             painter.setPen(QPen(QColor("#f5c451"), 2))
             painter.setBrush(QColor("#f5c451"))
