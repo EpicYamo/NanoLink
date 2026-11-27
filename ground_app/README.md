@@ -95,6 +95,16 @@ ground-to-aircraft command path on the bench. START is only recorded —
 the aircraft will not fly autonomously until stabilization and navigation
 stages exist.
 
+### Transmitter-only bench test (RC sniff)
+
+The ground station also listens on the transmitter's RC address, so the
+handheld can be tested with no aircraft at all. Turn the transmitter on near
+the ground station: the app's RC tile shows **RC SNIFF LIVE**, the
+Transmitter tab displays the live stick values, and the ground-station OLED's
+RF Diagnostics page shows `TX SNIFF: LIVE`. If the sniff works but the air
+link does not, the problem is on the aircraft side; if the sniff is also
+dead, the problem is the transmitter or ground-station radio.
+
 Map tiles are downloaded from OpenStreetMap and cached on disk, so the map needs
 internet access on first view; overlays still work offline.
 

@@ -21,7 +21,12 @@ constexpr uint32_t STATUS_PERIOD_MS = 1000;
 
 const uint8_t GCS_ADDRESS[6] = "PC01A";
 const uint8_t CMD_ADDRESS[6] = "CMND1";
+const uint8_t RC_ADDRESS[6] = "NANO1";
 RF24 radio(PIN_NRF_CE, PIN_NRF_CSN, RF_SPI_HZ);
+
+// Defined later in this file; declared here for the sniffer/command helpers.
+void printBool(bool value);
+void radioStartListening();
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C oled(U8G2_R0, U8X8_PIN_NONE);
 
 bool radioReady = false;
@@ -104,8 +109,7 @@ void sendCommand(uint8_t opcode, const uint8_t *payload) {
   radio.setRetries(2, 5);
   const bool sent = radio.write(&frame, sizeof(frame));
   radio.setRetries(0, 0);
-  radio.openReadingPipe(1, GCS_ADDRESS);
-  radio.startListening();
+  radioStartListening();
 
   printCommandStatus(opcodeName(opcode), seq, sent);
 }
@@ -167,6 +171,59 @@ void pollSerialInput() {
 }
 // -----------------------------------------------------------------------------
 
+// --- transmitter RC sniffer (bench diagnostic) -------------------------------
+// Pipe 0 also listens on the RC address so the handheld transmitter can be
+// verified against the ground station directly, without the aircraft.
+struct __attribute__((packed)) RcPacket {
+  uint16_t throttle;
+  uint16_t aileron;
+  uint16_t elevator;
+  uint8_t armed;
+  uint16_t pot1;
+  uint16_t pot2;
+  uint8_t switch2State;
+};
+static_assert(sizeof(RcPacket) == 12, "RC packet must match the Nano transmitter");
+
+RcPacket latestSniff{};
+uint32_t sniffPackets = 0;
+uint32_t lastSniffMs = 0;
+uint32_t lastSniffEmitMs = 0;
+
+void radioStartListening() {
+  radio.openReadingPipe(0, RC_ADDRESS);   // bench RC sniffer pipe
+  radio.openReadingPipe(1, GCS_ADDRESS);  // aircraft telemetry pipe
+  radio.startListening();
+}
+
+void handleRcSniff() {
+  RcPacket sniff{};
+  radio.read(&sniff, sizeof(sniff));
+  if (sniff.throttle < 900 || sniff.throttle > 2100 ||
+      sniff.aileron < 900 || sniff.aileron > 2100 ||
+      sniff.elevator < 900 || sniff.elevator > 2100 ||
+      sniff.armed > 1 || sniff.switch2State > 2) {
+    return; // not a plausible Nano packet; ignore
+  }
+  ++sniffPackets;
+  latestSniff = sniff;
+  lastSniffMs = millis();
+  if (millis() - lastSniffEmitMs < 200) return; // ~5 Hz reporting over USB
+
+  lastSniffEmitMs = millis();
+  Serial.print(F("{\"source\":\"ground_station\",\"kind\":\"rc_sniff\",\"seq\":"));
+  Serial.print(sniffPackets);
+  Serial.print(F(",\"throttle_us\":")); Serial.print(sniff.throttle);
+  Serial.print(F(",\"aileron_us\":")); Serial.print(sniff.aileron);
+  Serial.print(F(",\"elevator_us\":")); Serial.print(sniff.elevator);
+  Serial.print(F(",\"armed\":")); printBool(sniff.armed);
+  Serial.print(F(",\"switch2\":")); Serial.print(sniff.switch2State);
+  Serial.print(F(",\"pot1\":")); Serial.print(sniff.pot1);
+  Serial.print(F(",\"pot2\":")); Serial.print(sniff.pot2);
+  Serial.println('}');
+}
+// -----------------------------------------------------------------------------
+
 void beginOled() {
   Wire.begin(); // F401 I2C1 default: SDA PB7, SCL PB6.
   Wire.setClock(100000);
@@ -210,7 +267,7 @@ void renderOled() {
   return;
 #endif
 
-  const uint8_t page = (millis() / 2500) % 4;
+  const uint8_t page = (millis() / 2500) % 5;
 
   oled.clearBuffer();
   oled.setFont(u8g2_font_6x10_tf);
@@ -265,7 +322,7 @@ void renderOled() {
     oled.setCursor(0, 63); oled.print(F("HDOP "));
     if (haveGpsFrame) oled.print(latestGps.hdopCenti / 100.0f, 2);
     else oled.print(F("--"));
-  } else {
+  } else if (page == 3) {
     oled.drawStr(0, 10, "GPS Position");
     const bool gpsFix = haveGpsFrame && (latestGps.flags & NanoLinkProtocol::GPS_FIX_OK);
     if (!gpsFix) {
@@ -278,6 +335,19 @@ void renderOled() {
       oled.setCursor(0, 55); oled.print(F("Alt ")); oled.print(latestGps.altitudeMm / 1000.0f, 1);
       oled.print(F("m Sat ")); oled.print(latestGps.satellites);
     }
+  } else {
+    oled.drawStr(0, 10, "RF Diagnostics");
+    oled.setCursor(0, 24);
+    oled.print(F("RX ")); oled.print(receivedPackets);
+    oled.print(F(" LOST ")); oled.print(lostPackets);
+    oled.setCursor(0, 40);
+    oled.print(F("ACK ")); oled.print(autoAckCount);
+    const bool sniffLive = sniffPackets && (millis() - lastSniffMs < 1000);
+    oled.setCursor(0, 55);
+    oled.print(F("TX SNIF: "));
+    oled.print(sniffLive ? F("LIVE") : F("NONE"));
+    oled.print(F(" "));
+    oled.print(sniffPackets);
   }
   oled.sendBuffer();
 }
@@ -409,6 +479,9 @@ void emitStatus() {
   Serial.print(F(",\"rx_packets\":")); Serial.print(receivedPackets);
   Serial.print(F(",\"lost_packets\":")); Serial.print(lostPackets);
   Serial.print(F(",\"auto_ack_count\":")); Serial.print(autoAckCount);
+  Serial.print(F(",\"rc_sniff_packets\":")); Serial.print(sniffPackets);
+  Serial.print(F(",\"rc_sniff_age_ms\":"));
+  Serial.print(sniffPackets ? (millis() - lastSniffMs) : 65535UL);
   Serial.print(F(",\"telemetry_age_ms\":"));
   Serial.print(receivedPackets == 0 ? 65535UL : millis() - lastPacketMs);
   Serial.println('}');
@@ -467,13 +540,12 @@ void setup() {
   radioReady = radio.begin();
   if (radioReady) {
     radioChipOk = radio.isChipConnected();
-    radio.openReadingPipe(1, GCS_ADDRESS);
     radio.setChannel(RF_CHANNEL);
     radio.setDataRate(RF24_250KBPS);
     radio.setPALevel(RF24_PA_MIN);
     radio.setAutoAck(true);
     radio.setRetries(0, 0);
-    radio.startListening();
+    radioStartListening();
   }
 #endif
   emitStatus();
@@ -483,7 +555,11 @@ void loop() {
   pollSerialInput();
 #if !OLED_DIAGNOSTIC
   if (radioReady) {
-    while (radio.available()) handleRadioPacket();
+    uint8_t pipe = 0;
+    while (radio.available(&pipe)) {
+      if (pipe == 0) handleRcSniff();
+      else handleRadioPacket();
+    }
   }
 #endif
   renderOled();

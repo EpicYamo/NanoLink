@@ -42,6 +42,8 @@ class TelemetryStore:
         self.rc: dict[str, Any] = {}
         self.radio: dict[str, Any] = {}
         self.command: dict[str, Any] = {}
+        self.rc_sniff: dict[str, Any] = {}
+        self.last_sniff_at: float = 0.0
         self.last_packet: dict[str, Any] = {}
         self.last_line = ""
         self.updated_at = 0.0
@@ -132,6 +134,21 @@ class TelemetryStore:
                 "course_centi_deg": packet.get("course_centi_deg", 0),
             }
             self.radio.update({"last_gps_seq": packet.get("seq")})
+        elif kind == "rc_sniff":
+            pot1 = int(packet.get("pot1", 0) or 0)
+            self.rc_sniff = {
+                "valid": True,
+                "armed": bool(packet.get("armed", False)),
+                "throttle_us": packet.get("throttle_us", 0),
+                "aileron_us": packet.get("aileron_us", 0),
+                "elevator_us": packet.get("elevator_us", 0),
+                "aux1": pot1 & 0x03FF,
+                "trim_flags": (pot1 >> 12) & 0x0F,
+                "throttle_boost": packet.get("pot2", 0),
+                "throttle_mode": packet.get("switch2", 0),
+                "packets": packet.get("seq", 0),
+            }
+            self.last_sniff_at = self.updated_at
         elif kind == "command":
             self.command.update({
                 "op": packet.get("op"),

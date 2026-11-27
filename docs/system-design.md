@@ -68,6 +68,17 @@ station. In the current stage the aircraft only **stores and acknowledges**
 missions — `start_mission` records a request but does not fly it, because
 stabilization and navigation controllers are not implemented yet.
 
+## Transmitter RC sniffer (bench diagnostic)
+
+The ground station also opens a receive pipe on the RC address (`NANO1`), so the
+handheld transmitter can be verified against the ground station **without the
+aircraft**. Received RC packets are reported over USB as `rc_sniff` JSON lines
+(~5 Hz) and shown on the ground-station OLED's RF Diagnostics page as
+`TX SNIFF: LIVE` with a packet counter. The desktop app displays sniffed
+channels in the Transmitter tab and marks the RC tile as `RC SNIFF LIVE` while
+aircraft telemetry is absent. This isolates the two RF ends: sniff live but no
+air link points to the aircraft side; no sniff points to the transmitter.
+
 ## Control surfaces and failsafe
 
 The aircraft controller mixes the transmitter's roll and pitch channels into

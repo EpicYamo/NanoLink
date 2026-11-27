@@ -86,6 +86,20 @@ class TelemetryStoreTests(unittest.TestCase):
         self.assertTrue(store.imu["ok"])
         self.assertFalse(store.rc["valid"])
 
+    def test_rc_sniff_updates_store(self):
+        store = TelemetryStore()
+        packet = {
+            "source": "ground_station", "kind": "rc_sniff", "seq": 42,
+            "throttle_us": 1500, "aileron_us": 1400, "elevator_us": 1600,
+            "armed": False, "switch2": 1, "pot1": 12288, "pot2": 512,
+        }
+        store.ingest(json.dumps(packet))
+        self.assertEqual(store.rc_sniff["throttle_us"], 1500)
+        self.assertEqual(store.rc_sniff["packets"], 42)
+        self.assertEqual(store.rc_sniff["trim_flags"], 3)  # 12288 >> 12
+        self.assertEqual(store.rc_sniff["aux1"], 0)
+        self.assertGreater(store.last_sniff_at, 0.0)
+
     def test_ground_station_packets_merge(self):
         store = TelemetryStore()
         packets = [

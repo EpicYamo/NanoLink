@@ -651,8 +651,8 @@ class MainWindow(QMainWindow):
             if pressure and not self.baro_calibrated:
                 self.baro.calibrate(pressure)
                 self.baro_calibrated = True
-        self.transmitter_view.set_rc(self.store.rc)
-        self._update_channel_table()
+        self.transmitter_view.set_rc(self.store.rc if self.store.rc else self.store.rc_sniff)
+        self._update_channel_table(self.store.rc if self.store.rc else self.store.rc_sniff)
         self._update_gps_panel()
         self._update_map_from_telemetry()
         self._refresh_command_status()
@@ -676,8 +676,9 @@ class MainWindow(QMainWindow):
         else:
             self.map_widget.set_aircraft(0.0, 0.0, None, False)
 
-    def _update_channel_table(self) -> None:
-        rc = self.store.rc
+    def _update_channel_table(self, rc: dict | None = None) -> None:
+        if rc is None:
+            rc = self.store.rc
         if not rc:
             return
         trim_flags = int(rc.get("trim_flags", 0) or 0)
@@ -789,16 +790,30 @@ class MainWindow(QMainWindow):
             rc_age = int(rc.get("rc_age_ms", 65535) or 65535)
             since_rc = (time.monotonic() - self.store.last_rc_packet_at) * 1000 if self.store.last_rc_packet_at else 65535
             valid = bool(rc.get("valid")) and rc_age + since_rc < 500
-            rc_value = "RC LIVE" if valid else ("RC LINK LOST" if self.store.last_rc_packet_at else "NO AIRCRAFT DATA")
-            rc_detail = (
-                f"Packets {rc.get('rc_packets', 0)} · age {rc.get('rc_age_ms', '—')} ms"
-                if self.store.last_rc_packet_at else "RC status is unknown until aircraft telemetry arrives"
+            sniff_fresh = (
+                self.store.last_sniff_at > 0
+                and time.monotonic() - self.store.last_sniff_at < 2.0
             )
-            self.tiles["rc"].set_state(
-                rc_value,
-                rc_detail,
-                "#55cf9a" if valid else "#e2aa57",
-            )
+            if valid:
+                rc_value = "RC LIVE"
+                rc_detail = f"Packets {rc.get('rc_packets', 0)} · age {rc.get('rc_age_ms', '—')} ms"
+                rc_color = "#55cf9a"
+            elif self.store.last_rc_packet_at:
+                rc_value = "RC LINK LOST"
+                rc_detail = f"Packets {rc.get('rc_packets', 0)} · age {rc.get('rc_age_ms', '—')} ms"
+                rc_color = "#e2aa57"
+            elif sniff_fresh:
+                rc_value = "RC SNIFF LIVE"
+                rc_detail = (
+                    f"Transmitter heard directly by GCS · sniff packets "
+                    f"{self.store.rc_sniff.get('packets', 0)}"
+                )
+                rc_color = "#7ca7d8"
+            else:
+                rc_value = "NO AIRCRAFT DATA"
+                rc_detail = "RC status is unknown until aircraft telemetry arrives"
+                rc_color = "#e2aa57"
+            self.tiles["rc"].set_state(rc_value, rc_detail, rc_color)
 
         if self.store.source == "aircraft_usb":
             self.tiles["oled"].set_state("N/A", "OLED is connected to ground station", "#7ca7d8")
