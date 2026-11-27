@@ -170,6 +170,16 @@ class TransmitterView(QWidget):
         else:
             denom = max(1, self.elevator_max_seen - self.elevator_center)
             py = cy + int(min(1.0, (pitch - self.elevator_center) / denom) * radius)
+        # Clamp the roll/pitch dot inside the circle: when both axes hit
+        # their extremes simultaneously, the raw position lands on the corner
+        # of a square (outside the circle). Scale it back to the boundary.
+        dx = px - rx
+        dy = py - cy
+        dist = math.sqrt(dx * dx + dy * dy)
+        if dist > radius:
+            scale = radius / dist
+            px = rx + int(dx * scale)
+            py = cy + int(dy * scale)
         for x, y in ((lx, ty), (px, py)):
             painter.setPen(QPen(QColor("#f5c451"), 2))
             painter.setBrush(QColor("#f5c451"))
