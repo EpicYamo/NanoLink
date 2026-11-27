@@ -110,14 +110,22 @@ class TransmitterView(QWidget):
         self.rc: dict = {}
         self.aileron_center = 1500
         self.elevator_center = 1500
+        self.aileron_min_seen = 1850
+        self.aileron_max_seen = 1150
+        self.elevator_min_seen = 1850
+        self.elevator_max_seen = 1150
         self.setMinimumSize(500, 350)
-
-    @staticmethod
-    def _stick_point(value: int, center: int, span: int) -> float:
-        return max(-1.0, min(1.0, (value - center) / span))
 
     def set_rc(self, rc: dict) -> None:
         self.rc = dict(rc)
+        # Track observed extremes so the dot reaches the circle boundary
+        # in every direction once the sticks have visited their limits.
+        roll = int(self.rc.get("aileron_us", 1500) or 1500)
+        pitch = int(self.rc.get("elevator_us", 1500) or 1500)
+        self.aileron_min_seen = min(self.aileron_min_seen, roll)
+        self.aileron_max_seen = max(self.aileron_max_seen, roll)
+        self.elevator_min_seen = min(self.elevator_min_seen, pitch)
+        self.elevator_max_seen = max(self.elevator_max_seen, pitch)
         self.update()
 
     def paintEvent(self, _event) -> None:
@@ -146,12 +154,22 @@ class TransmitterView(QWidget):
         roll = int(self.rc.get("aileron_us", 1500) or 1500)
         pitch = int(self.rc.get("elevator_us", 1500) or 1500)
 
-        # Transmitter: aileron LOW (1309) = stick RIGHT, HIGH (1850) = LEFT.
-        # Elevator: LOW (1248) = stick UP, HIGH (1850) = DOWN.
-        # Centers auto-calibrate to the trim-adjusted neutral on first packet.
+        # Normalize each direction independently from the auto-calibrated
+        # center to the observed extreme, so the dot reaches the circle
+        # boundary once the sticks have visited their limits.
         ty = cy + int((1.0 - max(0.0, min(1.0, (throttle - 1000) / 1000))) * radius - radius)
-        px = rx - int(max(-1.0, min(1.0, (roll - self.aileron_center) / 350.0)) * radius)
-        py = cy + int(max(-1.0, min(1.0, (pitch - self.elevator_center) / 350.0)) * radius)
+        if roll < self.aileron_center:
+            denom = max(1, self.aileron_center - self.aileron_min_seen)
+            px = rx + int(min(1.0, (self.aileron_center - roll) / denom) * radius)
+        else:
+            denom = max(1, self.aileron_max_seen - self.aileron_center)
+            px = rx - int(min(1.0, (roll - self.aileron_center) / denom) * radius)
+        if pitch < self.elevator_center:
+            denom = max(1, self.elevator_center - self.elevator_min_seen)
+            py = cy - int(min(1.0, (self.elevator_center - pitch) / denom) * radius)
+        else:
+            denom = max(1, self.elevator_max_seen - self.elevator_center)
+            py = cy + int(min(1.0, (pitch - self.elevator_center) / denom) * radius)
         for x, y in ((lx, ty), (px, py)):
             painter.setPen(QPen(QColor("#f5c451"), 2))
             painter.setBrush(QColor("#f5c451"))
