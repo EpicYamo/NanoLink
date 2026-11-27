@@ -701,14 +701,14 @@ class MainWindow(QMainWindow):
         self.transmitter_view.set_rc(rc)
         self._update_channel_table(rc)
 
-        # Auto-calibrate stick centers on the first RC sniff packet
+        # Auto-calibrate stick centers on the first RC packet
         # (sticks should be at rest when the ground station connects).
-        if not self.stick_center_calibrated and self.store.rc_sniff:
+        if not self.stick_center_calibrated and rc:
             self.transmitter_view.aileron_center = int(
-                self.store.rc_sniff.get("aileron_us", 1500) or 1500
+                rc.get("aileron_us", 1500) or 1500
             )
             self.transmitter_view.elevator_center = int(
-                self.store.rc_sniff.get("elevator_us", 1500) or 1500
+                rc.get("elevator_us", 1500) or 1500
             )
             self.stick_center_calibrated = True
             self.statusBar().showMessage(
