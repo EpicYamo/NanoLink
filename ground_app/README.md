@@ -84,6 +84,17 @@ is planned and visualized only. **The aircraft cannot execute it yet**: the
 flight controller has no stabilization mode and no computer-to-aircraft
 command uplink. Flying the mission requires those firmware stages first.
 
+### Sending the mission to the aircraft
+
+With the ground station connected, **Send mission to aircraft** uploads
+home, the waypoint, and the loiter radius to the aircraft over the nRF24
+command link; **Request START** records a start request and **Request ABORT**
+clears it. The aircraft stores the mission and answers each command with an
+acknowledgment frame, shown under the mission summary. This verifies the
+ground-to-aircraft command path on the bench. START is only recorded —
+the aircraft will not fly autonomously until stabilization and navigation
+stages exist.
+
 Map tiles are downloaded from OpenStreetMap and cached on disk, so the map needs
 internet access on first view; overlays still work offline.
 

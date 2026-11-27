@@ -96,6 +96,10 @@ class TelemetryStoreTests(unittest.TestCase):
              "elevator_us": 1500, "trim_flags": 2},
             {"source": "ground_station", "kind": "gps", "stream_ok": True,
              "fix_ok": True, "satellites": 8, "lat_e7": 410000000},
+            {"source": "ground_station", "kind": "command", "op": "set_waypoint",
+             "cmd_seq": 7, "status": "sent"},
+            {"source": "ground_station", "kind": "command_ack", "op": "set_waypoint",
+             "cmd_seq": 7, "result": 0, "mission_state": 1},
         ]
         for packet in packets:
             store.ingest(json.dumps(packet))
@@ -104,6 +108,10 @@ class TelemetryStoreTests(unittest.TestCase):
         self.assertEqual(store.rc["throttle_us"], 1200)
         self.assertTrue(store.gps["fix"])
         self.assertEqual(store.gps["satellites"], 8)
+        self.assertEqual(store.command["op"], "set_waypoint")
+        self.assertEqual(store.command["status"], "sent")
+        self.assertEqual(store.command["ack_seq"], 7)
+        self.assertEqual(store.command["mission_state"], 1)
 
     def test_attitude_estimator_uses_static_gravity(self):
         estimator = AttitudeEstimator()

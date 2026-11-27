@@ -50,6 +50,24 @@ bearings. This is a planning/visualization feature only — executing a mission
 requires aircraft stabilization and a command uplink, which are future firmware
 stages.
 
+## Ground-to-aircraft command link
+
+The ground station also forwards mission commands to the aircraft. The computer
+sends plain-text lines over USB serial (`CMD,set_home,lat_e7,lon_e7`,
+`CMD,set_waypoint,lat_e7,lon_e7,alt_mm`, `CMD,set_loiter,radius_m`,
+`CMD,start_mission`, `CMD,abort_mission`); the ground station packs each into a
+32-byte `CommandFrame` and transmits it on a second nRF24 pipe (`CMND1`) that
+the aircraft opens alongside the RC pipe. The aircraft validates each command,
+stores the mission, and immediately transmits a `CommandAckFrame` back, which
+the ground station forwards to the computer as a `command_ack` JSON line.
+
+Commands are rate-limited by design: the aircraft's single radio alternates
+briefly between RC listening, telemetry transmission, and command acknowledgment.
+RC always keeps priority; a lost command simply reports `failed` on the ground
+station. In the current stage the aircraft only **stores and acknowledges**
+missions — `start_mission` records a request but does not fly it, because
+stabilization and navigation controllers are not implemented yet.
+
 ## Control surfaces and failsafe
 
 The aircraft controller mixes the transmitter's roll and pitch channels into

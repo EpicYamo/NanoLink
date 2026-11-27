@@ -387,6 +387,18 @@ class MainWindow(QMainWindow):
         clear_button.clicked.connect(lambda _checked=False: self._clear_waypoint())
         side_layout.addWidget(clear_button)
 
+        send_button = QPushButton("Send mission to aircraft")
+        send_button.clicked.connect(lambda _checked=False: self._send_mission_to_aircraft())
+        side_layout.addWidget(send_button)
+
+        start_button = QPushButton("Request START (recorded only)")
+        start_button.clicked.connect(lambda _checked=False: self._send_command_line("CMD,start_mission"))
+        side_layout.addWidget(start_button)
+
+        abort_button = QPushButton("Request ABORT")
+        abort_button.clicked.connect(lambda _checked=False: self._send_command_line("CMD,abort_mission"))
+        side_layout.addWidget(abort_button)
+
         zoom_row = QHBoxLayout()
         zoom_in_button = QPushButton("Zoom +")
         zoom_in_button.clicked.connect(lambda _checked=False: self.map_widget.zoom_in())
@@ -402,8 +414,68 @@ class MainWindow(QMainWindow):
         self.mission_summary.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         side_layout.addWidget(self.mission_summary, 1)
 
+        self.command_status = QLabel("No commands sent yet.")
+        self.command_status.setWordWrap(True)
+        self.command_status.setStyleSheet("color: #7ca7d8;")
+        side_layout.addWidget(self.command_status)
+
         layout.addWidget(side, 1)
         return page
+
+    _MISSION_STATE_LABELS = {
+        0: "no mission on aircraft",
+        1: "mission loaded on aircraft",
+        2: "start requested — execution NOT implemented",
+    }
+
+    def _send_command_line(self, line: str) -> None:
+        if self.port is None or self.mode_combo.currentData() != "ground_station":
+            self.statusBar().showMessage("Connect the ground station to send aircraft commands")
+            return
+        try:
+            self.port.write((line + "\n").encode("ascii"))
+        except serial.SerialException as exc:
+            self.statusBar().showMessage(f"Serial write failed: {exc}")
+
+    def _send_mission_to_aircraft(self) -> None:
+        if not self.mission.home:
+            self.statusBar().showMessage("Set home before sending the mission")
+            return
+        if not self.mission.waypoint:
+            self.statusBar().showMessage("Place a waypoint before sending the mission")
+            return
+        home_lat, home_lon = self.mission.home
+        wp_lat, wp_lon, wp_alt = self.mission.waypoint
+        lines = [
+            f"CMD,set_home,{int(round(home_lat * 1e7))},{int(round(home_lon * 1e7))}",
+            f"CMD,set_waypoint,{int(round(wp_lat * 1e7))},{int(round(wp_lon * 1e7))},{int(round(wp_alt * 1000))}",
+            f"CMD,set_loiter,{int(round(self.mission.loiter_radius_m))}",
+        ]
+        for line in lines:
+            self._send_command_line(line)
+        self.statusBar().showMessage("Mission commands sent — waiting for aircraft acknowledgments")
+
+    def _refresh_command_status(self) -> None:
+        command = self.store.command
+        if not command:
+            self.command_status.setText("No commands sent yet.")
+            return
+        text = ""
+        if "op" in command:
+            text += f"Last sent: {command['op']} (seq {command.get('seq', '—')}) — {command.get('status', '—')}"
+        if "ack_op" in command:
+            state = self._MISSION_STATE_LABELS.get(
+                int(command.get("mission_state", 0) or 0), "unknown state"
+            )
+            result = int(command.get("ack_result", 0) or 0)
+            result_text = {0: "accepted", 1: "rejected (not ready)", 2: "unknown opcode"}.get(
+                result, f"result {result}"
+            )
+            text += (
+                f"\nAircraft ACK: {command['ack_op']} (seq {command.get('ack_seq', '—')}) — {result_text}\n"
+                f"Aircraft mission state: {state}"
+            )
+        self.command_status.setText(text or "No commands sent yet.")
 
     def _map_clicked(self, lat: float, lon: float) -> None:
         try:
@@ -495,6 +567,7 @@ class MainWindow(QMainWindow):
         self.map_widget.track.clear()
         self.map_widget.home = None
         self.map_widget.set_aircraft(0.0, 0.0, None, False)
+        self.store.command = {}
         self._refresh_mission_summary()
         self.connect_button.setText("Disconnect")
         self.tiles["serial"].set_state("CONNECTED", device, "#55cf9a")
@@ -582,6 +655,7 @@ class MainWindow(QMainWindow):
         self._update_channel_table()
         self._update_gps_panel()
         self._update_map_from_telemetry()
+        self._refresh_command_status()
         self._refresh_health()
 
     def _update_map_from_telemetry(self) -> None:

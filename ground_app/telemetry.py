@@ -41,6 +41,7 @@ class TelemetryStore:
         self.gps: dict[str, Any] = {}
         self.rc: dict[str, Any] = {}
         self.radio: dict[str, Any] = {}
+        self.command: dict[str, Any] = {}
         self.last_packet: dict[str, Any] = {}
         self.last_line = ""
         self.updated_at = 0.0
@@ -131,6 +132,20 @@ class TelemetryStore:
                 "course_centi_deg": packet.get("course_centi_deg", 0),
             }
             self.radio.update({"last_gps_seq": packet.get("seq")})
+        elif kind == "command":
+            self.command.update({
+                "op": packet.get("op"),
+                "seq": packet.get("cmd_seq"),
+                "status": packet.get("status"),
+            })
+        elif kind == "command_ack":
+            self.command.update({
+                "ack_op": packet.get("op"),
+                "ack_seq": packet.get("cmd_seq"),
+                "ack_result": packet.get("result", 0),
+                "mission_state": packet.get("mission_state", 0),
+                "ack_at": self.updated_at,
+            })
         else:
             raise ValueError(f"unknown ground-station packet kind: {kind!r}")
         return packet
