@@ -43,7 +43,7 @@ constexpr uint8_t RF_CHANNEL = 90;
 constexpr uint32_t RF_SPI_HZ = 4000000UL;
 constexpr uint32_t RC_TIMEOUT_MS = 500;
 constexpr uint32_t SENSOR_PERIOD_MS = 20;
-constexpr uint32_t RADIO_TELEMETRY_PERIOD_MS = 30;
+constexpr uint32_t RADIO_TELEMETRY_PERIOD_MS = 100;
 constexpr uint32_t USB_DIAGNOSTIC_PERIOD_MS = 100;
 constexpr uint16_t SERVO_CENTER_US = 1500;
 constexpr uint16_t MIX_LIMIT_US = 300;   // max elevon throw (us), adjustable
@@ -144,17 +144,12 @@ float attitudeRollDeg = 0.0f;
 float attitudePitchDeg = 0.0f;
 bool attitudeReady = false;
 uint32_t lastAttitudeMs = 0;
-// Startup level/gyro calibration: capture the gyro bias and the accelerometer's
-// level reference over the first ~1 s (hold the aircraft still and level).
-constexpr uint8_t ATTITUDE_CALIB_SAMPLES = 50;
+// Level/gyro calibration is set via the ground-station CMD_CALIBRATE_LEVEL
+// command (the app's "Calibrate level/gyro" button), not automatically.
 float gyroBiasRoll = 0.0f;
 float gyroBiasPitch = 0.0f;
 float rollZero = 0.0f;
 float pitchZero = 0.0f;
-float gyroSumRoll = 0.0f;
-float gyroSumPitch = 0.0f;
-uint8_t attitudeCalibCount = 0;
-bool attitudeCalibrated = false;
 uint16_t telemetrySequence = 0;
 uint16_t telemetryTxOk = 0;
 uint16_t telemetryTxFailed = 0;
@@ -409,23 +404,13 @@ void updateAttitude() {
 
   const uint32_t now = millis();
 
-  // Calibration phase: average the gyro (bias) while the aircraft should be
-  // still, then record the accelerometer attitude as the level reference.
-  if (!attitudeCalibrated) {
-    gyroSumRoll += gyroRoll;
-    gyroSumPitch += gyroPitch;
-    ++attitudeCalibCount;
-    if (attitudeCalibCount >= ATTITUDE_CALIB_SAMPLES) {
-      gyroBiasRoll = gyroSumRoll / attitudeCalibCount;
-      gyroBiasPitch = gyroSumPitch / attitudeCalibCount;
-      rollZero = rollAcc;
-      pitchZero = pitchAcc;
-      attitudeRollDeg = 0.0f;
-      attitudePitchDeg = 0.0f;
-      attitudeCalibrated = true;
-      attitudeReady = true;
-      lastAttitudeMs = now;
-    }
+  if (!attitudeReady) {
+    // First sample: seed the estimate from the accelerometer (relative to the
+    // level reference, which is zero until CMD_CALIBRATE_LEVEL is received).
+    attitudeRollDeg = rollAcc - rollZero;
+    attitudePitchDeg = pitchAcc - pitchZero;
+    attitudeReady = true;
+    lastAttitudeMs = now;
     return;
   }
 
@@ -684,6 +669,23 @@ void handleCommandFrame() {
       break;
     case NanoLinkProtocol::CMD_ABORT_MISSION:
       mission.state = NanoLinkProtocol::MISSION_NONE;
+      break;
+    case NanoLinkProtocol::CMD_CALIBRATE_LEVEL:
+      // Capture the current accelerometer attitude as the level reference and
+      // the current gyro reading as the bias. Hold the aircraft in the desired
+      // level attitude when sending this.
+      {
+        const float ax = sensorData.accelMg[0] / 1000.0f;
+        const float ay = sensorData.accelMg[1] / 1000.0f;
+        const float az = sensorData.accelMg[2] / 1000.0f;
+        rollZero = atan2f(ay, az) * 57.2957795f;
+        pitchZero = atan2f(-ax, sqrtf(ay * ay + az * az)) * 57.2957795f;
+        gyroBiasRoll = sensorData.gyroCentiDps[0] / 100.0f;
+        gyroBiasPitch = sensorData.gyroCentiDps[1] / 100.0f;
+        attitudeRollDeg = 0.0f;
+        attitudePitchDeg = 0.0f;
+        attitudeReady = true;
+      }
       break;
     default:
       result = NanoLinkProtocol::CMD_RESULT_UNKNOWN_OP;

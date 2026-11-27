@@ -643,6 +643,10 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(
                 "Calibrating gyro/level — barometer baseline will be captured when data arrives"
             )
+        # In ground-station mode, also tell the aircraft to capture its own
+        # level/gyro reference for self-level stabilization.
+        if self.mode_combo.currentData() == "ground_station":
+            self._send_command_line("CMD,calibrate_level")
 
     def _read_serial(self) -> None:
         if self.port is None:

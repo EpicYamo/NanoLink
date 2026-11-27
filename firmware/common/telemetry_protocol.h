@@ -32,6 +32,7 @@ constexpr uint8_t CMD_SET_WAYPOINT = 2;
 constexpr uint8_t CMD_SET_LOITER = 3;
 constexpr uint8_t CMD_START_MISSION = 4;
 constexpr uint8_t CMD_ABORT_MISSION = 5;
+constexpr uint8_t CMD_CALIBRATE_LEVEL = 6;
 
 constexpr uint8_t MISSION_NONE = 0;
 constexpr uint8_t MISSION_LOADED = 1;

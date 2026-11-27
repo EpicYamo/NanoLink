@@ -67,6 +67,7 @@ const char *opcodeName(uint8_t opcode) {
     case NanoLinkProtocol::CMD_SET_LOITER: return "set_loiter";
     case NanoLinkProtocol::CMD_START_MISSION: return "start_mission";
     case NanoLinkProtocol::CMD_ABORT_MISSION: return "abort_mission";
+    case NanoLinkProtocol::CMD_CALIBRATE_LEVEL: return "calibrate_level";
     default: return "unknown";
   }
 }
@@ -159,6 +160,8 @@ void handleCommandLine(char *line) {
     sendCommand(NanoLinkProtocol::CMD_START_MISSION, payload);
   } else if (strcmp(op, "abort_mission") == 0) {
     sendCommand(NanoLinkProtocol::CMD_ABORT_MISSION, payload);
+  } else if (strcmp(op, "calibrate_level") == 0) {
+    sendCommand(NanoLinkProtocol::CMD_CALIBRATE_LEVEL, payload);
   }
 }
 
