@@ -43,7 +43,7 @@ constexpr uint8_t RF_CHANNEL = 90;
 constexpr uint32_t RF_SPI_HZ = 4000000UL;
 constexpr uint32_t RC_TIMEOUT_MS = 500;
 constexpr uint32_t SENSOR_PERIOD_MS = 20;
-constexpr uint32_t RADIO_TELEMETRY_PERIOD_MS = 100;
+constexpr uint32_t RADIO_TELEMETRY_PERIOD_MS = 30;
 constexpr uint32_t USB_DIAGNOSTIC_PERIOD_MS = 100;
 constexpr uint16_t SERVO_CENTER_US = 1500;
 constexpr uint16_t MIX_LIMIT_US = 300;   // max elevon throw (us), adjustable
@@ -584,7 +584,7 @@ void transmitFrame(Frame &frame, uint8_t type) {
   fillHeader(frame, type);
   radio.stopListening();
   radio.openWritingPipe(GCS_ADDRESS);
-  radio.setRetries(2, 8);  // a few auto-ACK retries improve telemetry reliability
+  radio.setRetries(0, 0);
   if (radio.write(&frame, sizeof(frame))) ++telemetryTxOk;
   else ++telemetryTxFailed;
   radioConfigureReceiver();
@@ -1022,6 +1022,7 @@ void loop() {
     if (!barometerReady) initBarometer();
   }
 
+  bool receivedPacket = false;
   if (radioReady) {
     uint8_t pipe = 0;
     while (radio.available(&pipe)) {
@@ -1040,6 +1041,7 @@ void loop() {
         lastRcPacketMs = millis();
         haveRcPacket = true;
         ++rcPacketCount;
+        receivedPacket = true;
       }
     }
   }
@@ -1054,7 +1056,7 @@ void loop() {
 #else
   applyControl(linkOk);
   updateLed(linkOk);
-  if (radioReady && millis() - lastRadioTelemetryMs >= RADIO_TELEMETRY_PERIOD_MS) {
+  if (radioReady && receivedPacket && millis() - lastRadioTelemetryMs >= RADIO_TELEMETRY_PERIOD_MS) {
     sendRadioTelemetry(linkOk);
     lastRadioTelemetryMs = millis();
   }

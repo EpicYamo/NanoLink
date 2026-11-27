@@ -201,13 +201,7 @@ uint32_t lastSniffMs = 0;
 uint32_t lastSniffEmitMs = 0;
 
 void radioStartListening() {
-  // The GCS receives aircraft telemetry on pipe 1. Pipe 0 is NOT opened for the
-  // RC sniffer anymore: the transmitter's RC floods the 3-slot RX FIFO (at
-  // ~100 Hz) and, during the brief OLED/USB-serial blocking windows, pushes
-  // telemetry packets out — which is what made the air link look "stale". The
-  // aircraft already reports the RC it receives over telemetry, so the sniffer
-  // is redundant for normal use.
-  radio.closeReadingPipe(0);
+  radio.openReadingPipe(0, RC_ADDRESS);   // bench RC sniffer pipe
   radio.openReadingPipe(1, GCS_ADDRESS);  // aircraft telemetry pipe
   radio.startListening();
 }
