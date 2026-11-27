@@ -587,7 +587,7 @@ void radioConfigureReceiver() {
   radio.setChannel(RF_CHANNEL);
   radio.setDataRate(RF24_250KBPS);
   radio.setPALevel(RF24_PA_LOW);
-  radio.setAutoAck(false);
+  radio.setAutoAck(true);  // ACK the RC link; telemetry itself is fire-and-forget
   radio.startListening();
 }
 

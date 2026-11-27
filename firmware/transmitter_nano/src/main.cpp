@@ -224,6 +224,8 @@ void setup() {
     radio.setChannel(RADIO_CHANNEL);
     radio.setDataRate(RF24_250KBPS);
     radio.setPALevel(RF24_PA_MAX);
+    radio.setAutoAck(true);
+    radio.setRetries(5, 15);
     radio.stopListening();
   }
 }
@@ -239,6 +241,7 @@ void loop() {
                 (rthTrigger ? (1u << NanoLinkProtocol::POT1_RTH_TRIGGER_SHIFT) : 0) |
                 (static_cast<uint16_t>(trimButtonFlags) << NanoLinkProtocol::POT1_TRIM_SHIFT);
 
-  if (radioReady) radio.write(&packet, sizeof(packet), true);  // fire-and-forget
+  // RC uses auto-ACK (confirmed delivery); telemetry is fire-and-forget.
+  if (radioReady) radio.write(&packet, sizeof(packet));
   delay(8);
 }
