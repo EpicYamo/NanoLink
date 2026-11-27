@@ -316,7 +316,6 @@ class MainWindow(QMainWindow):
             "imu": StatusTile("MPU9250"),
             "baro": StatusTile("BMP280"),
             "gps": StatusTile("NEO-8M GPS"),
-            "oled": StatusTile("SSD1306 OLED"),
         }
         for col, key in enumerate(self.tiles):
             grid.addWidget(self.tiles[key], 0, col)
@@ -354,21 +353,10 @@ class MainWindow(QMainWindow):
         return page
 
     def _make_controls_tab(self) -> QWidget:
-        from PySide6.QtWidgets import QCheckBox
-
         page = QWidget()
         layout = QHBoxLayout(page)
-
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
-        left_layout.setContentsMargins(0, 0, 0, 0)
         self.transmitter_view = TransmitterView()
-        self.sniffer_toggle = QCheckBox("Switch to transmitter directly")
-        self.sniffer_toggle.toggled.connect(self._sniffer_toggled)
-        left_layout.addWidget(self.transmitter_view, 1)
-        left_layout.addWidget(self.sniffer_toggle)
-        layout.addWidget(left, 2)
-
+        layout.addWidget(self.transmitter_view, 2)
         self.channel_table = QTableWidget(13, 2)
         self.channel_table.setHorizontalHeaderLabels(["Input", "Received value"])
         self.channel_table.verticalHeader().setVisible(False)
@@ -385,20 +373,6 @@ class MainWindow(QMainWindow):
             self.channel_table.setItem(row, 1, QTableWidgetItem("—"))
         layout.addWidget(self.channel_table, 1)
         return page
-
-    def _sniffer_toggled(self, checked: bool) -> None:
-        if self.port is None or self.mode_combo.currentData() != "ground_station":
-            self.statusBar().showMessage("Connect the ground station first")
-            return
-        cmd = "GCS,listen_sniffer" if checked else "GCS,listen_telemetry"
-        try:
-            self.port.write((cmd + "\n").encode("ascii"))
-            self.statusBar().showMessage(
-                "Ground station listening: transmitter (90)" if checked else
-                "Ground station listening: telemetry (100)"
-            )
-        except serial.SerialException as exc:
-            self.statusBar().showMessage(f"Serial write failed: {exc}")
 
     def _make_map_tab(self) -> QWidget:
         from PySide6.QtWidgets import QCheckBox, QDoubleSpinBox, QSpinBox
@@ -926,17 +900,6 @@ class MainWindow(QMainWindow):
                 rc_detail = "RC status is unknown until aircraft telemetry arrives"
                 rc_color = "#e2aa57"
             self.tiles["rc"].set_state(rc_value, rc_detail, rc_color)
-
-        if self.store.source == "aircraft_usb":
-            self.tiles["oled"].set_state("N/A", "OLED is connected to ground station", "#7ca7d8")
-        elif self.store.source == "ground_station" and "oled_ready" in self.store.radio:
-            if self.store.radio.get("oled_ready"):
-                addr = int(self.store.radio.get("oled_addr", 0) or 0)
-                self.tiles["oled"].set_state("FOUND", f"I2C ACK at 0x{addr:02X}", "#55cf9a")
-            else:
-                self.tiles["oled"].set_state("NOT FOUND", "No ACK at 0x3C or 0x3D", "#e27676")
-        else:
-            self.tiles["oled"].set_state("WAITING", "Ground station status not received", "#65758b")
 
         imu = self.store.imu
         if imu.get("ok"):

@@ -20,7 +20,6 @@ namespace {
 constexpr uint8_t PIN_NRF_CE = PB0;
 constexpr uint8_t PIN_NRF_CSN = PA4;
 constexpr uint8_t RF_CHANNEL = 90;
-constexpr uint8_t TELEMETRY_CHANNEL = 100;  // aircraft -> GCS telemetry channel
 constexpr uint32_t RF_SPI_HZ = 4000000UL;
 constexpr uint32_t STATUS_PERIOD_MS = 1000;
 
@@ -31,15 +30,12 @@ RF24 radio(PIN_NRF_CE, PIN_NRF_CSN, RF_SPI_HZ);
 
 // Defined later in this file; declared here for the sniffer/command helpers.
 void printBool(bool value);
-void applyListeningMode();
+void radioStartListening();
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C oled(U8G2_R0, U8X8_PIN_NONE);
 
 bool radioReady = false;
 bool radioChipOk = false;
 bool oledReady = false;
-// Listening mode: false = aircraft telemetry (channel 100), true = transmitter
-// sniffer (channel 90). Toggled from the app's Transmitter tab.
-bool gcsListenSniffer = false;
 bool haveSequence = false;
 bool haveSensorFrame = false;
 bool haveControlFrame = false;
@@ -119,9 +115,8 @@ void sendCommand(uint8_t opcode, const uint8_t *payload) {
 
   radio.stopListening();
   radio.openWritingPipe(CMD_ADDRESS);
-  radio.setChannel(RF_CHANNEL);  // commands go on channel 90, where the aircraft listens
   radio.write(&frame, sizeof(frame), true);  // fire-and-forget (no auto-ACK)
-  applyListeningMode();
+  radioStartListening();
 
   printCommandStatus(opcodeName(opcode), seq, true);
 }
@@ -129,7 +124,6 @@ void sendCommand(uint8_t opcode, const uint8_t *payload) {
 void handleCommandLine(char *line) {
   // Expected: CMD,set_home,lat_e7,lon_e7 | CMD,set_waypoint,lat,lon,alt_mm |
   //           CMD,set_loiter,radius_m | CMD,start_mission | CMD,abort_mission
-  // GCS-local: GCS,listen_sniffer | GCS,listen_telemetry
   char *fields[6]{};
   uint8_t count = 0;
   fields[count++] = line;
@@ -139,21 +133,7 @@ void handleCommandLine(char *line) {
       fields[count++] = p + 1;
     }
   }
-  if (count < 2) return;
-
-  // GCS-local listening-mode switch (not forwarded to the aircraft).
-  if (strcmp(fields[0], "GCS") == 0) {
-    if (strcmp(fields[1], "listen_sniffer") == 0) {
-      gcsListenSniffer = true;
-      applyListeningMode();
-    } else if (strcmp(fields[1], "listen_telemetry") == 0) {
-      gcsListenSniffer = false;
-      applyListeningMode();
-    }
-    return;
-  }
-
-  if (strcmp(fields[0], "CMD") != 0) return;
+  if (count < 2 || strcmp(fields[0], "CMD") != 0) return;
 
   uint8_t payload[24]{};
   const char *op = fields[1];
@@ -221,19 +201,9 @@ uint32_t sniffPackets = 0;
 uint32_t lastSniffMs = 0;
 uint32_t lastSniffEmitMs = 0;
 
-void applyListeningMode() {
-  radio.stopListening();
-  if (gcsListenSniffer) {
-    // Sniffer mode: listen on channel 90 for the transmitter's RC directly.
-    radio.closeReadingPipe(1);
-    radio.openReadingPipe(0, RC_ADDRESS);
-    radio.setChannel(RF_CHANNEL);
-  } else {
-    // Telemetry mode: listen on channel 100 for the aircraft's telemetry.
-    radio.closeReadingPipe(0);
-    radio.openReadingPipe(1, GCS_ADDRESS);
-    radio.setChannel(TELEMETRY_CHANNEL);
-  }
+void radioStartListening() {
+  radio.openReadingPipe(0, RC_ADDRESS);   // bench RC sniffer pipe
+  radio.openReadingPipe(1, GCS_ADDRESS);  // aircraft telemetry pipe
   radio.startListening();
 }
 
@@ -918,9 +888,9 @@ void setup() {
   renderBootScreen();
   emitStatus(); // Publish USB/OLED health even if radio initialization fails.
 #if !OLED_DIAGNOSTIC
-  radioReady = nl_radio::begin(radio, TELEMETRY_CHANNEL, RF24_PA_MIN);
+  radioReady = nl_radio::begin(radio, RF_CHANNEL, RF24_PA_MIN);
   radioChipOk = radioReady; // nl_radio::begin() already verified a register round-trip.
-  if (radioReady) applyListeningMode();
+  if (radioReady) radioStartListening();
   lastRadioAttemptMs = millis();
   lastOledAttemptMs = millis();
 #endif
@@ -938,9 +908,9 @@ void loop() {
   // Self-healing: bring the radio and OLED up if they failed at boot.
   if (!radioReady && millis() - lastRadioAttemptMs >= 2000) {
     lastRadioAttemptMs = millis();
-    radioReady = nl_radio::begin(radio, TELEMETRY_CHANNEL, RF24_PA_MIN);
+    radioReady = nl_radio::begin(radio, RF_CHANNEL, RF24_PA_MIN);
     radioChipOk = radioReady;
-    if (radioReady) applyListeningMode();
+    if (radioReady) radioStartListening();
   }
   if (!oledReady && millis() - lastOledAttemptMs >= 3000) {
     lastOledAttemptMs = millis();
