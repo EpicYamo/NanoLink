@@ -34,8 +34,10 @@ constexpr int16_t AILERON_MIN_US = 1150;
 constexpr int16_t AILERON_MAX_US = 1850;
 constexpr int16_t ELEVATOR_MIN_US = 1150;
 constexpr int16_t ELEVATOR_MAX_US = 1850;
+constexpr int16_t THROTTLE_CENTER_RAW = 509;  // self-centering stick rest position
 constexpr int16_t THROTTLE_FULL_RAW = 950;
-constexpr int16_t RATE_MIN_PM = 250;   // 25% control authority
+constexpr int16_t THROTTLE_DEADBAND = 6;
+constexpr int16_t RATE_MIN_PM = 100;   // 10% control authority
 constexpr int16_t RATE_MAX_PM = 1000;  // 100% control authority
 constexpr int16_t TRIM_STEP_US = 6;
 constexpr int16_t TRIM_MAX_US = 150;
@@ -116,9 +118,15 @@ void readSwitches() {
 }
 
 void updateThrottle() {
-  // Simple linear throttle; the reflex/cruise throttle modes are gone.
-  const int distance = constrain(analogRead(PIN_THROTTLE), 0, THROTTLE_FULL_RAW);
-  packet.throttle = map(distance, 0, THROTTLE_FULL_RAW, 1000, 2000);
+  // The throttle stick self-centers (gamepad-style), so its rest position is
+  // the middle of travel. Treat the center as idle: pushing up adds throttle,
+  // and everything at or below center is idle.
+  const int raw = analogRead(PIN_THROTTLE);
+  int distance = raw - THROTTLE_CENTER_RAW;
+  if (distance < THROTTLE_DEADBAND) distance = 0;
+  const int span = THROTTLE_FULL_RAW - THROTTLE_CENTER_RAW;
+  distance = constrain(distance, 0, span);
+  packet.throttle = map(distance, 0, span, 1000, 2000);
 }
 
 void updateTrims() {

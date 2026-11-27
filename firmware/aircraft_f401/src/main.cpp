@@ -46,20 +46,22 @@ constexpr uint32_t SENSOR_PERIOD_MS = 20;
 constexpr uint32_t RADIO_TELEMETRY_PERIOD_MS = 30;
 constexpr uint32_t USB_DIAGNOSTIC_PERIOD_MS = 100;
 constexpr uint16_t SERVO_CENTER_US = 1500;
-constexpr uint16_t MIX_LIMIT_US = 175;   // halved elevon throw (was 350)
+constexpr uint16_t MIX_LIMIT_US = 300;   // max elevon throw (us), adjustable
 constexpr uint32_t GPS_BAUD = 9600;
 
 // --- elevon direction (flip after the bench check) ------------------------
-// ROLL_SIGN/PITCH_SIGN invert each axis independently; SWAP_ELEVONS crosses
-// the two servo outputs. If the surfaces move the wrong way on the bench,
-// change these rather than rewiring.
+// ROLL_SIGN/PITCH_SIGN invert each axis independently; SWAP_ROLL_PITCH swaps
+// the two control axes (common <-> differential); SWAP_ELEVONS crosses the two
+// servo outputs. If the surfaces move the wrong way on the bench, change these
+// rather than rewiring.
 constexpr int16_t ROLL_SIGN = 1;
 constexpr int16_t PITCH_SIGN = 1;
+constexpr bool SWAP_ROLL_PITCH = true;   // transmitter gimbal axes are crossed
 constexpr bool SWAP_ELEVONS = false;
 
 // --- stage B stabilization -------------------------------------------------
-constexpr float MAX_BANK_DEG = 35.0f;   // max commanded roll angle
-constexpr float MAX_PITCH_DEG = 25.0f;  // max commanded pitch angle
+constexpr float MAX_BANK_DEG = 45.0f;   // max commanded roll angle
+constexpr float MAX_PITCH_DEG = 30.0f;  // max commanded pitch angle
 constexpr float ANGLE_KP = 3.0f;        // us of servo per degree of angle error
 constexpr float RATE_KD = 0.15f;        // us of servo per deg/s of rotation
 
@@ -205,8 +207,18 @@ void applyControl(bool linkOk) {
     throttle = map(input, 1000, 2000, ESC_MIN_US, ESC_MAX_US);
   }
 
-  // The A4 knob on the transmitter sets control authority (250..1000 per-mille).
-  const float rate = constrain(static_cast<int>(rc.pot2), 250, 1000) / 1000.0f;
+  // The A4 knob on the transmitter sets control authority (100..1000 per-mille).
+  const float rate = constrain(static_cast<int>(rc.pot2), 100, 1000) / 1000.0f;
+
+  // Read the stick channels and apply the roll/pitch axis swap if the
+  // transmitter gimbal axes are crossed.
+  int32_t rollIn = constrain(rc.aileron, 1000, 2000);
+  int32_t pitchIn = constrain(rc.elevator, 1000, 2000);
+  if (SWAP_ROLL_PITCH) {
+    const int32_t tmp = rollIn;
+    rollIn = pitchIn;
+    pitchIn = tmp;
+  }
 
   int32_t rollCmd = 0;
   int32_t pitchCmd = 0;
@@ -214,15 +226,15 @@ void applyControl(bool linkOk) {
   const bool stabilize = rc.switch2State != 0 && attitudeReady;
   if (!stabilize) {
     // Manual passthrough (dual-rate throw).
-    rollCmd = static_cast<int32_t>(ROLL_SIGN * (constrain(rc.aileron, 1000, 2000) - SERVO_CENTER_US) * rate);
-    pitchCmd = static_cast<int32_t>(PITCH_SIGN * (constrain(rc.elevator, 1000, 2000) - SERVO_CENTER_US) * rate);
+    rollCmd = static_cast<int32_t>(ROLL_SIGN * (rollIn - SERVO_CENTER_US) * rate);
+    pitchCmd = static_cast<int32_t>(PITCH_SIGN * (pitchIn - SERVO_CENTER_US) * rate);
   } else {
     // Self-level: the stick commands a target angle; a P(D) controller drives
     // the elevons to hold it. The knob scales the commanded angle.
-    const float aileronNorm = (constrain(rc.aileron, 1000, 2000) - SERVO_CENTER_US) / 350.0f;
-    const float elevatorNorm = (constrain(rc.elevator, 1000, 2000) - SERVO_CENTER_US) / 350.0f;
-    const float targetRoll = ROLL_SIGN * aileronNorm * MAX_BANK_DEG * rate;
-    const float targetPitch = PITCH_SIGN * elevatorNorm * MAX_PITCH_DEG * rate;
+    const float rollNorm = (rollIn - SERVO_CENTER_US) / 350.0f;
+    const float pitchNorm = (pitchIn - SERVO_CENTER_US) / 350.0f;
+    const float targetRoll = ROLL_SIGN * rollNorm * MAX_BANK_DEG * rate;
+    const float targetPitch = PITCH_SIGN * pitchNorm * MAX_PITCH_DEG * rate;
     const float rollErr = targetRoll - attitudeRollDeg;
     const float pitchErr = targetPitch - attitudePitchDeg;
     const float gyroRoll = sensorData.gyroCentiDps[0] / 100.0f;   // deg/s

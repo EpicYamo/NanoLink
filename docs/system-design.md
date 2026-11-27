@@ -58,8 +58,8 @@ mode: position 0 is manual passthrough, positions 1 and 2 engage self-level.
 The A4 knob on the transmitter sets control authority (25%..100%): in manual
 mode it scales elevon throw, in stabilized mode it scales the commanded bank
 angle. Direction and axis mapping are configured by `ROLL_SIGN`,
-`PITCH_SIGN`, and `SWAP_ELEVONS` in the aircraft firmware and must be verified
-on the bench before first flight.
+`PITCH_SIGN`, `SWAP_ROLL_PITCH`, and `SWAP_ELEVONS` in the aircraft firmware
+and must be verified on the bench before first flight.
 
 ## Ground-to-aircraft command link
 
@@ -93,11 +93,13 @@ air link points to the aircraft side; no sniff points to the transmitter.
 ## Control surfaces and failsafe
 
 The aircraft controller mixes the transmitter's roll and pitch channels into
-left and right elevon commands. Throw is halved from the original build and the
-transmitter's A4 knob scales it further (dual rates). Servo direction and
-travel depend on the airframe's linkage and must be verified on the bench; the
-`ROLL_SIGN`, `PITCH_SIGN`, and `SWAP_ELEVONS` constants correct any reversal.
-The transmitter arm bit gates the ESC output. If valid RC packets stop arriving,
+left and right elevon commands. Elevon throw tops out at `MIX_LIMIT_US` (300 µs
+by default) and the transmitter's A4 knob scales it from 10%..100% (dual
+rates). The throttle stick is self-centering, so its rest position is idle and
+pushing up adds throttle. Servo direction and travel depend on the airframe's
+linkage and must be verified on the bench; the `ROLL_SIGN`, `PITCH_SIGN`,
+`SWAP_ROLL_PITCH`, and `SWAP_ELEVONS` constants correct any reversal. The
+transmitter arm bit gates the ESC output. If valid RC packets stop arriving,
 the controller sets the ESC to its configured idle pulse and centers both
 elevons.
 
