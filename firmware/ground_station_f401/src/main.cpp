@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "../../common/telemetry_protocol.h"
+#include "../../common/radio_init.h"
 
 #ifndef OLED_DIAGNOSTIC
 #define OLED_DIAGNOSTIC 0
@@ -50,6 +51,9 @@ NanoLinkProtocol::SensorFrame latestSensor{};
 NanoLinkProtocol::ControlFrame latestControl{};
 NanoLinkProtocol::GpsFrame latestGps{};
 uint8_t oledAddress = 0;
+bool wireStarted = false;
+uint32_t lastRadioAttemptMs = 0;
+uint32_t lastOledAttemptMs = 0;
 
 // --- computer-to-aircraft command bridge -------------------------------------
 char inputLine[96]{};
@@ -228,8 +232,11 @@ void handleRcSniff() {
 // -----------------------------------------------------------------------------
 
 void beginOled() {
-  Wire.begin(); // F401 I2C1 default: SDA PB7, SCL PB6.
-  Wire.setClock(100000);
+  if (!wireStarted) {
+    Wire.begin(); // F401 I2C1 default: SDA PB7, SCL PB6.
+    Wire.setClock(100000);
+    wireStarted = true;
+  }
 
   Wire.beginTransmission(0x3C);
   if (Wire.endTransmission() == 0) oledAddress = 0x3C;
@@ -245,13 +252,19 @@ void beginOled() {
   oledReady = true;
 }
 
+// Flush the display. (U8g2's sendBuffer() returns void, so health is handled
+// by the periodic beginOled() re-probe when the device never came up.)
+void oledFlush() {
+  oled.sendBuffer();
+}
+
 void renderBootScreen() {
   if (!oledReady) return;
   oled.clearBuffer();
   oled.setFont(u8g2_font_6x10_tf);
   oled.drawStr(22, 30, "NanoLink GCS");
   oled.drawStr(10, 52, "Waiting for aircraft");
-  oled.sendBuffer();
+  oledFlush();
 }
 
 void renderOled() {
@@ -266,7 +279,7 @@ void renderOled() {
   oled.setCursor(8, 29); oled.print(F("SSD1306 128x64"));
   oled.setCursor(8, 43); oled.print(F("I2C address 0x")); oled.print(oledAddress, HEX);
   oled.drawBox((millis() / 20) % 112 + 8, 52, 8, 6);
-  oled.sendBuffer();
+  oledFlush();
   return;
 #endif
 
@@ -352,7 +365,7 @@ void renderOled() {
     oled.print(F(" "));
     oled.print(sniffPackets);
   }
-  oled.sendBuffer();
+  oledFlush();
 }
 
 void printBool(bool value) { Serial.print(value ? F("true") : F("false")); }
@@ -568,7 +581,7 @@ void diagDraw(const char *line, bool showCounter) {
       oled.print(sniffPackets);
     }
   }
-  oled.sendBuffer();
+  oledFlush();
 }
 
 // Bit-banged SPI probe: bypasses the SPI peripheral entirely. Pure GPIO
@@ -869,16 +882,11 @@ void setup() {
   renderBootScreen();
   emitStatus(); // Publish USB/OLED health even if radio initialization fails.
 #if !OLED_DIAGNOSTIC
-  radioReady = radio.begin();
-  if (radioReady) {
-    radioChipOk = radio.isChipConnected();
-    radio.setChannel(RF_CHANNEL);
-    radio.setDataRate(RF24_250KBPS);
-    radio.setPALevel(RF24_PA_MIN);
-    radio.setAutoAck(true);
-    radio.setRetries(0, 0);
-    radioStartListening();
-  }
+  radioReady = nl_radio::begin(radio, RF_CHANNEL, RF24_PA_MIN);
+  radioChipOk = radioReady; // nl_radio::begin() already verified a register round-trip.
+  if (radioReady) radioStartListening();
+  lastRadioAttemptMs = millis();
+  lastOledAttemptMs = millis();
 #endif
   emitStatus();
 #endif
@@ -891,6 +899,17 @@ void loop() {
   return;
 #endif
 #if !OLED_DIAGNOSTIC
+  // Self-healing: bring the radio and OLED up if they failed at boot.
+  if (!radioReady && millis() - lastRadioAttemptMs >= 2000) {
+    lastRadioAttemptMs = millis();
+    radioReady = nl_radio::begin(radio, RF_CHANNEL, RF24_PA_MIN);
+    radioChipOk = radioReady;
+    if (radioReady) radioStartListening();
+  }
+  if (!oledReady && millis() - lastOledAttemptMs >= 3000) {
+    lastOledAttemptMs = millis();
+    beginOled();
+  }
   if (radioReady) {
     uint8_t pipe = 0;
     while (radio.available(&pipe)) {

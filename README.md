@@ -48,6 +48,24 @@ Each unit has an independent PlatformIO project:
 Build instructions and radio packet details are available in the project
 directories and [system design](docs/system-design.md).
 
+## Flashing
+
+A single helper builds and flashes each unit, waiting for the programmer and
+retrying the upload so it works on the first attempt:
+
+```sh
+./tools/flash.sh build        # compile all three firmwares
+./tools/flash.sh aircraft     # flash the aircraft controller (ST-Link)
+./tools/flash.sh gcs          # flash the ground station (ST-Link)
+./tools/flash.sh tx           # flash the Nano transmitter (USB serial)
+./tools/flash.sh monitor gcs  # open the serial monitor
+```
+
+The STM32 projects patch the stm32duino SPI driver at build time (see
+`firmware/common/spi_fix.py`) to work around an SPI1 enable bug on the F401/F411
+Black Pill that otherwise hangs the radio link. The fix is applied automatically
+and survives framework reinstallation.
+
 ## Desktop debug monitor
 
 `ground_app/` contains a read-only visual monitor with two connection modes:

@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "../../common/telemetry_protocol.h"
+#include "../../common/radio_init.h"
 
 #ifndef ESC_MIN_US
 #define ESC_MIN_US 1000
@@ -126,6 +127,9 @@ uint32_t lastRcPacketMs = 0;
 uint32_t lastSensorSampleMs = 0;
 uint32_t lastRadioTelemetryMs = 0;
 uint32_t lastUsbDiagnosticMs = 0;
+uint32_t lastRadioAttemptMs = 0;
+uint32_t lastRadioHealthMs = 0;
+uint32_t lastSensorRetryMs = 0;
 uint8_t telemetryTypeIndex = 0;
 char nmeaLine[120]{};
 uint8_t nmeaLength = 0;
@@ -202,17 +206,19 @@ bool i2cDevicePresent(uint8_t address) {
   return SensorWire.endTransmission() == 0;
 }
 
-bool sensorsBegin() {
-  SensorWire.begin();
-  SensorWire.setClock(100000);
-
+void scanI2cBus() {
   i2cAddressCount = 0;
   for (uint8_t address = 0x08; address <= 0x77; ++address) {
     if (i2cDevicePresent(address) && i2cAddressCount < sizeof(i2cAddresses)) {
       i2cAddresses[i2cAddressCount++] = address;
     }
   }
+}
 
+bool initImu() {
+  if (imuReady) return true;
+
+  imu = nullptr;
   if (i2cDevicePresent(0x68)) {
     imu = &imuAt68;
     imuAddress = 0x68;
@@ -220,19 +226,26 @@ bool sensorsBegin() {
     imu = &imuAt69;
     imuAddress = 0x69;
   }
-  if (imu) {
-    imu->setWire(&SensorWire);
-    imuIdReadResult = imu->readId(&imuWhoAmI);
-    const bool mpu6500Compatible = imuWhoAmI == 0x70;
-    const bool mpu9250Compatible = imuWhoAmI == 0x71 || imuWhoAmI == 0x73;
-    if (imuIdReadResult == 0 && (mpu6500Compatible || mpu9250Compatible)) {
-      imu->beginAccel();
-      imu->beginGyro();
-      imuHasMagnetometer = mpu9250Compatible;
-      if (imuHasMagnetometer) imu->beginMag();
-      imuReady = true;
-    }
+  if (!imu) return false;
+
+  imu->setWire(&SensorWire);
+  imuIdReadResult = imu->readId(&imuWhoAmI);
+  const bool mpu6500Compatible = imuWhoAmI == 0x70;
+  const bool mpu9250Compatible = imuWhoAmI == 0x71 || imuWhoAmI == 0x73;
+  if (imuIdReadResult != 0 || !(mpu6500Compatible || mpu9250Compatible)) {
+    return false;
   }
+
+  imu->beginAccel();
+  imu->beginGyro();
+  imuHasMagnetometer = mpu9250Compatible;
+  if (imuHasMagnetometer) imu->beginMag();
+  imuReady = true;
+  return true;
+}
+
+bool initBarometer() {
+  if (barometerReady) return true;
 
   if (barometer.begin(0x76)) {
     barometerAddress = 0x76;
@@ -248,7 +261,15 @@ bool sensorsBegin() {
                           Adafruit_BMP280::FILTER_X16,
                           Adafruit_BMP280::STANDBY_MS_125);
   }
-  return imuReady || barometerReady;
+  return barometerReady;
+}
+
+void sensorsBegin() {
+  SensorWire.begin();
+  SensorWire.setClock(100000);
+  scanI2cBus();
+  initImu();
+  initBarometer();
 }
 
 void initializeGps() {
@@ -813,18 +834,27 @@ void setup() {
   applyManualControl(false);
 #endif
 
+  // Arm the watchdog before peripheral init. If a driver ever wedges again the
+  // board reboots and retries instead of sitting silently on the bench.
+  IWatchdog.begin(2000000);
+  IWatchdog.reload();
+
   initializeGps();
+  IWatchdog.reload();
   sensorsBegin();
+  IWatchdog.reload();
 
 #if !USB_DIAGNOSTIC
-  radioReady = radio.begin();
+  radioReady = nl_radio::begin(radio, RF_CHANNEL, RF24_PA_LOW);
   if (radioReady) radioConfigureReceiver();
 #else
   radioReady = false;
 #endif
 
   lastRcPacketMs = millis();
-  IWatchdog.begin(1000000);
+  lastRadioAttemptMs = millis();
+  lastRadioHealthMs = millis();
+  lastSensorRetryMs = millis();
 #endif
 }
 
@@ -836,6 +866,28 @@ void loop() {
   IWatchdog.reload();
   sampleSensors();
   updateGps();
+
+  // Self-healing peripherals: retry a failed radio, re-arm a wedged radio, and
+  // re-probe sensors that were missing at boot.
+#if !USB_DIAGNOSTIC
+  if (!radioReady && millis() - lastRadioAttemptMs >= 2000) {
+    lastRadioAttemptMs = millis();
+    radioReady = nl_radio::begin(radio, RF_CHANNEL, RF24_PA_LOW);
+    if (radioReady) radioConfigureReceiver();
+  }
+  if (radioReady && millis() - lastRadioHealthMs >= 10000) {
+    lastRadioHealthMs = millis();
+    if (!nl_radio::responds(radio, RF_CHANNEL)) {
+      radioReady = false;
+      lastRadioAttemptMs = millis();
+    }
+  }
+#endif
+  if ((!imuReady || !barometerReady) && millis() - lastSensorRetryMs >= 5000) {
+    lastSensorRetryMs = millis();
+    if (!imuReady) initImu();
+    if (!barometerReady) initBarometer();
+  }
 
   bool receivedPacket = false;
   if (radioReady) {
