@@ -51,7 +51,7 @@ constexpr uint8_t EEPROM_MAGIC = 0xA5;
 
 constexpr bool REVERSE_AILERON = true;
 constexpr bool REVERSE_ELEVATOR = true;
-constexpr float FILTER_ALPHA = 0.35f;
+constexpr float FILTER_ALPHA = 0.2f;
 
 struct __attribute__((packed)) RcPacket {
   uint16_t throttle;
@@ -229,5 +229,5 @@ void loop() {
                 (static_cast<uint16_t>(trimButtonFlags) << NanoLinkProtocol::POT1_TRIM_SHIFT);
 
   if (radioReady) radio.write(&packet, sizeof(packet));
-  delay(20);
+  delay(8);
 }

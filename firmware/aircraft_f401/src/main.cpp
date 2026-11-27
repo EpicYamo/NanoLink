@@ -144,6 +144,17 @@ float attitudeRollDeg = 0.0f;
 float attitudePitchDeg = 0.0f;
 bool attitudeReady = false;
 uint32_t lastAttitudeMs = 0;
+// Startup level/gyro calibration: capture the gyro bias and the accelerometer's
+// level reference over the first ~1 s (hold the aircraft still and level).
+constexpr uint8_t ATTITUDE_CALIB_SAMPLES = 50;
+float gyroBiasRoll = 0.0f;
+float gyroBiasPitch = 0.0f;
+float rollZero = 0.0f;
+float pitchZero = 0.0f;
+float gyroSumRoll = 0.0f;
+float gyroSumPitch = 0.0f;
+uint8_t attitudeCalibCount = 0;
+bool attitudeCalibrated = false;
 uint16_t telemetrySequence = 0;
 uint16_t telemetryTxOk = 0;
 uint16_t telemetryTxFailed = 0;
@@ -397,18 +408,38 @@ void updateAttitude() {
   const float pitchAcc = atan2f(-ax, sqrtf(ay * ay + az * az)) * 57.2957795f;
 
   const uint32_t now = millis();
-  if (!attitudeReady) {
-    attitudeRollDeg = rollAcc;
-    attitudePitchDeg = pitchAcc;
-    attitudeReady = true;
-    lastAttitudeMs = now;
+
+  // Calibration phase: average the gyro (bias) while the aircraft should be
+  // still, then record the accelerometer attitude as the level reference.
+  if (!attitudeCalibrated) {
+    gyroSumRoll += gyroRoll;
+    gyroSumPitch += gyroPitch;
+    ++attitudeCalibCount;
+    if (attitudeCalibCount >= ATTITUDE_CALIB_SAMPLES) {
+      gyroBiasRoll = gyroSumRoll / attitudeCalibCount;
+      gyroBiasPitch = gyroSumPitch / attitudeCalibCount;
+      rollZero = rollAcc;
+      pitchZero = pitchAcc;
+      attitudeRollDeg = 0.0f;
+      attitudePitchDeg = 0.0f;
+      attitudeCalibrated = true;
+      attitudeReady = true;
+      lastAttitudeMs = now;
+    }
     return;
   }
+
   float dt = (now - lastAttitudeMs) / 1000.0f;
   lastAttitudeMs = now;
   if (dt <= 0.0f || dt > 0.25f) dt = 0.02f;
-  attitudeRollDeg = 0.98f * (attitudeRollDeg + gyroRoll * dt) + 0.02f * rollAcc;
-  attitudePitchDeg = 0.98f * (attitudePitchDeg + gyroPitch * dt) + 0.02f * pitchAcc;
+
+  const float gr = gyroRoll - gyroBiasRoll;
+  const float gp = gyroPitch - gyroBiasPitch;
+  const float rollRef = rollAcc - rollZero;
+  const float pitchRef = pitchAcc - pitchZero;
+
+  attitudeRollDeg = 0.98f * (attitudeRollDeg + gr * dt) + 0.02f * rollRef;
+  attitudePitchDeg = 0.98f * (attitudePitchDeg + gp * dt) + 0.02f * pitchRef;
 }
 
 float parseNmeaFloat(const char *value) {
@@ -568,7 +599,7 @@ void transmitFrame(Frame &frame, uint8_t type) {
   fillHeader(frame, type);
   radio.stopListening();
   radio.openWritingPipe(GCS_ADDRESS);
-  radio.setRetries(0, 0);
+  radio.setRetries(2, 8);  // a few auto-ACK retries improve telemetry reliability
   if (radio.write(&frame, sizeof(frame))) ++telemetryTxOk;
   else ++telemetryTxFailed;
   radioConfigureReceiver();
