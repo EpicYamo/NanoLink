@@ -758,9 +758,25 @@ void radioDiagSetup() {
     }
   }
 
-  // Raw SPI probe via Arduino SPI class (uses HAL internally).
-  diagDraw("5 SPI PROBE", false);
-  diagSerial("spi_probe");
+  // Probe WITHOUT beginTransaction — SPI is already configured by begin().
+  // beginTransaction internally resets SPI1 (FORCE_RESET/RELEASE_RESET) and
+  // then fails to properly reconfigure it, which is the root cause of the hang.
+  diagDraw("5A NO XACT", false);
+  diagSerial("probe_no_xact");
+  {
+    digitalWrite(PIN_NRF_CSN, LOW);
+    delayMicroseconds(5);
+    const uint8_t statusNoXact = SPI.transfer(0xFF);
+    digitalWrite(PIN_NRF_CSN, HIGH);
+    Serial.print(F("{\"source\":\"ground_station\",\"kind\":\"radio_test\",\"stage\":\"no_xact_status\",\"status\":"));
+    Serial.print(statusNoXact);
+    Serial.println('}');
+  }
+  delay(500);
+
+  // Now try WITH beginTransaction to confirm it's the breaking point.
+  diagDraw("5B WITH XACT", false);
+  diagSerial("probe_with_xact");
   SPI.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));
   pinMode(PIN_NRF_CSN, OUTPUT);
   digitalWrite(PIN_NRF_CSN, LOW);
