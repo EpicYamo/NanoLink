@@ -22,6 +22,25 @@ constexpr uint8_t CONTROL_GPS_FIX = 1u << 3;
 constexpr uint8_t GPS_STREAM_OK = 1u << 0;
 constexpr uint8_t GPS_FIX_OK = 1u << 1;
 
+// Ground-station-to-aircraft commands (stage A: stored and acknowledged;
+// mission execution requires future stabilization and navigation stages).
+constexpr uint8_t TYPE_COMMAND = 4;
+constexpr uint8_t TYPE_COMMAND_ACK = 5;
+
+constexpr uint8_t CMD_SET_HOME = 1;
+constexpr uint8_t CMD_SET_WAYPOINT = 2;
+constexpr uint8_t CMD_SET_LOITER = 3;
+constexpr uint8_t CMD_START_MISSION = 4;
+constexpr uint8_t CMD_ABORT_MISSION = 5;
+
+constexpr uint8_t MISSION_NONE = 0;
+constexpr uint8_t MISSION_LOADED = 1;
+constexpr uint8_t MISSION_START_REQUESTED = 2;
+
+constexpr uint8_t CMD_RESULT_OK = 0;
+constexpr uint8_t CMD_RESULT_NOT_READY = 1;
+constexpr uint8_t CMD_RESULT_UNKNOWN_OP = 2;
+
 constexpr uint16_t POT1_AUX_MASK = 0x03FF;
 constexpr uint8_t POT1_TRIM_SHIFT = 12;
 constexpr uint8_t TRIM_ELEVATOR_UP = 1u << 0;
@@ -83,5 +102,27 @@ static_assert(sizeof(Header) == 6, "Telemetry header layout changed");
 static_assert(sizeof(SensorFrame) <= 32, "Sensor frame exceeds nRF24 payload");
 static_assert(sizeof(ControlFrame) <= 32, "Control frame exceeds nRF24 payload");
 static_assert(sizeof(GpsFrame) <= 32, "GPS frame exceeds nRF24 payload");
+
+// Ground station -> aircraft. Payload layout depends on the opcode:
+// CMD_SET_HOME:    int32 lat_e7, int32 lon_e7
+// CMD_SET_WAYPOINT: int32 lat_e7, int32 lon_e7, int32 alt_mm
+// CMD_SET_LOITER:   uint16 radius_m
+struct __attribute__((packed)) CommandFrame {
+  Header header;
+  uint8_t opcode;
+  uint8_t payload[24];
+};
+
+// Aircraft -> ground station, sent immediately after a command is accepted.
+struct __attribute__((packed)) CommandAckFrame {
+  Header header;
+  uint8_t opcode;
+  uint8_t result;
+  uint8_t missionState;
+  uint16_t commandSequence;
+};
+
+static_assert(sizeof(CommandFrame) <= 32, "Command frame exceeds nRF24 payload");
+static_assert(sizeof(CommandAckFrame) <= 32, "Command ACK exceeds nRF24 payload");
 
 } // namespace NanoLinkProtocol

@@ -47,6 +47,7 @@ constexpr uint32_t GPS_BAUD = 9600;
 
 const uint8_t RC_ADDRESS[6] = "NANO1";
 const uint8_t GCS_ADDRESS[6] = "PC01A";
+const uint8_t CMD_ADDRESS[6] = "CMND1";
 
 // I2C2: SDA PB3, SCL PB10. GPS USART1: RX PA10, TX PA9.
 TwoWire SensorWire(PB3, PB10);
@@ -421,6 +422,8 @@ void updateGps() {
 
 void radioConfigureReceiver() {
   radio.openReadingPipe(0, RC_ADDRESS);
+  // Pipe 1 receives mission commands from the ground station.
+  radio.openReadingPipe(1, CMD_ADDRESS);
   radio.setChannel(RF_CHANNEL);
   radio.setDataRate(RF24_250KBPS);
   radio.setPALevel(RF24_PA_LOW);
@@ -447,6 +450,97 @@ void transmitFrame(Frame &frame, uint8_t type) {
   else ++telemetryTxFailed;
   radioConfigureReceiver();
 }
+
+// ---- Ground-station mission commands (stage A: store and acknowledge) -------
+struct AircraftMission {
+  int32_t homeLatE7 = 0;
+  int32_t homeLonE7 = 0;
+  int32_t waypointLatE7 = 0;
+  int32_t waypointLonE7 = 0;
+  int32_t waypointAltMm = 0;
+  uint16_t loiterRadiusM = 30;
+  uint8_t state = NanoLinkProtocol::MISSION_NONE;
+  uint8_t lastOpcode = 0;
+  uint16_t lastSequence = 0;
+  bool haveHome = false;
+  bool haveWaypoint = false;
+};
+
+AircraftMission mission{};
+
+int32_t payloadInt32(const uint8_t *payload, uint8_t offset) {
+  int32_t value = 0;
+  memcpy(&value, payload + offset, sizeof(value));
+  return value;
+}
+
+uint16_t payloadUint16(const uint8_t *payload, uint8_t offset) {
+  uint16_t value = 0;
+  memcpy(&value, payload + offset, sizeof(value));
+  return value;
+}
+
+void sendCommandAck(uint8_t opcode, uint8_t result, uint16_t commandSequence) {
+  NanoLinkProtocol::CommandAckFrame frame{};
+  frame.opcode = opcode;
+  frame.result = result;
+  frame.missionState = mission.state;
+  frame.commandSequence = commandSequence;
+  transmitFrame(frame, NanoLinkProtocol::TYPE_COMMAND_ACK);
+}
+
+void handleCommandFrame() {
+  NanoLinkProtocol::CommandFrame command{};
+  radio.read(&command, sizeof(command));
+  if (command.header.magic != NanoLinkProtocol::MAGIC ||
+      command.header.version != NanoLinkProtocol::VERSION ||
+      command.header.type != NanoLinkProtocol::TYPE_COMMAND) {
+    return;
+  }
+
+  uint8_t result = NanoLinkProtocol::CMD_RESULT_OK;
+  switch (command.opcode) {
+    case NanoLinkProtocol::CMD_SET_HOME:
+      mission.homeLatE7 = payloadInt32(command.payload, 0);
+      mission.homeLonE7 = payloadInt32(command.payload, 4);
+      mission.haveHome = true;
+      if (mission.haveHome && mission.haveWaypoint) {
+        mission.state = NanoLinkProtocol::MISSION_LOADED;
+      }
+      break;
+    case NanoLinkProtocol::CMD_SET_WAYPOINT:
+      mission.waypointLatE7 = payloadInt32(command.payload, 0);
+      mission.waypointLonE7 = payloadInt32(command.payload, 4);
+      mission.waypointAltMm = payloadInt32(command.payload, 8);
+      mission.haveWaypoint = true;
+      if (mission.haveHome && mission.haveWaypoint) {
+        mission.state = NanoLinkProtocol::MISSION_LOADED;
+      }
+      break;
+    case NanoLinkProtocol::CMD_SET_LOITER:
+      mission.loiterRadiusM = payloadUint16(command.payload, 0);
+      break;
+    case NanoLinkProtocol::CMD_START_MISSION:
+      if (mission.haveHome && mission.haveWaypoint) {
+        // Recorded only: stabilization and navigation execution come later.
+        mission.state = NanoLinkProtocol::MISSION_START_REQUESTED;
+      } else {
+        result = NanoLinkProtocol::CMD_RESULT_NOT_READY;
+      }
+      break;
+    case NanoLinkProtocol::CMD_ABORT_MISSION:
+      mission.state = NanoLinkProtocol::MISSION_NONE;
+      break;
+    default:
+      result = NanoLinkProtocol::CMD_RESULT_UNKNOWN_OP;
+      break;
+  }
+
+  mission.lastOpcode = command.opcode;
+  mission.lastSequence = command.header.sequence;
+  sendCommandAck(command.opcode, result, command.header.sequence);
+}
+// -----------------------------------------------------------------------------
 
 void sendRadioTelemetry(bool linkOk) {
   const uint8_t type = telemetryTypeIndex++ % 3;
@@ -587,7 +681,13 @@ void loop() {
 
   bool receivedPacket = false;
   if (radioReady) {
-    while (radio.available()) {
+    uint8_t pipe = 0;
+    while (radio.available(&pipe)) {
+      if (pipe == 1) {
+        // Mission commands arrive on the ground-station pipe.
+        handleCommandFrame();
+        continue;
+      }
       RcPacket incoming{};
       radio.read(&incoming, sizeof(incoming));
       if (incoming.throttle >= 900 && incoming.throttle <= 2100 &&
