@@ -187,7 +187,7 @@ class TransmitterView(QWidget):
 
         armed = bool(self.rc.get("armed", False))
         mode_value = self.rc.get("throttle_mode", "—")
-        mode_label = {0: "CRUISE (0)", 1: "CRUISE (1)", 2: "REFLEX (2)"}.get(mode_value, str(mode_value))
+        mode_label = {0: "MANUAL (0)", 1: "STABILIZED (1)", 2: "STABILIZED (2)"}.get(mode_value, str(mode_value))
         trims = int(self.rc.get("trim_flags", 0) or 0)
         trim_names = ("ELEV ↑", "ELEV ↓", "AIL →", "AIL ←")
         active_trims = [name for bit, name in enumerate(trim_names) if trims & (1 << bit)]
@@ -257,6 +257,7 @@ class MainWindow(QMainWindow):
         self.port: serial.Serial | None = None
         self.rx_buffer = bytearray()
         self.event_count = 0
+        self._pending_log: list[str] = []
 
         root = QWidget()
         self.setCentralWidget(root)
@@ -276,8 +277,11 @@ class MainWindow(QMainWindow):
         self.poll_timer = QTimer(self)
         self.poll_timer.timeout.connect(self._read_serial)
         self.poll_timer.start(20)
+        self.fast_ui_timer = QTimer(self)
+        self.fast_ui_timer.timeout.connect(self._refresh_fast_ui)
+        self.fast_ui_timer.start(40)
         self.ui_timer = QTimer(self)
-        self.ui_timer.timeout.connect(self._refresh_health)
+        self.ui_timer.timeout.connect(self._refresh_slow_ui)
         self.ui_timer.start(250)
         self._refresh_ports()
         self._apply_style()
@@ -360,8 +364,8 @@ class MainWindow(QMainWindow):
         self.channel_table.horizontalHeader().setStretchLastSection(True)
         self.channel_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.channel_names = [
-            "Throttle", "Aileron", "Elevator", "Arm", "Throttle mode",
-            "Auxiliary A5", "Throttle boost A4", "Elevator trim up",
+            "Throttle", "Aileron", "Elevator", "Arm", "Flight mode",
+            "Auxiliary A5", "Throw rate A4", "Elevator trim up",
             "Elevator trim down", "Aileron trim right", "Aileron trim left",
             "Left stick X", "Reserved D7/D8",
         ]
@@ -673,10 +677,11 @@ class MainWindow(QMainWindow):
                 f"Source mismatch: selected {expected}, device reports {packet.get('source')}"
             )
         self.event_count += 1
-        summary = f"{packet.get('source')} / {packet.get('kind')} seq={packet.get('seq', '—')}"
-        self.packet_summary.setText(f"Frames displayed: {self.event_count}   |   Last: {summary}")
-        self.packet_log.appendPlainText(json.dumps(packet, ensure_ascii=False, separators=(",", ":")))
+        self._pending_log.append(json.dumps(packet, ensure_ascii=False, separators=(",", ":")))
 
+        # Fast sensor-only UI: the horizon and plots follow the accelerometer
+        # and gyro directly. Everything else renders on timers to keep the
+        # event loop responsive.
         if packet.get("source") == "aircraft_usb" or packet.get("kind") == "sensor":
             self.accel_plot.add_values(self.store.imu.get("accel_mg", []), self.store.imu.get("ok", False))
             self.gyro_plot.add_values(self.store.imu.get("gyro_cdeg_s", []), self.store.imu.get("ok", False))
@@ -686,10 +691,11 @@ class MainWindow(QMainWindow):
             if pressure and not self.baro_calibrated:
                 self.baro.calibrate(pressure)
                 self.baro_calibrated = True
-        self.transmitter_view.set_rc(self.store.rc if self.store.rc else self.store.rc_sniff)
-        self._update_channel_table(self.store.rc if self.store.rc else self.store.rc_sniff)
-        self._update_gps_panel()
-        self._update_map_from_telemetry()
+
+    def _refresh_fast_ui(self) -> None:
+        rc = self.store.rc if self.store.rc else self.store.rc_sniff
+        self.transmitter_view.set_rc(rc)
+        self._update_channel_table(rc)
 
         # Auto-calibrate stick centers on the first RC sniff packet
         # (sticks should be at rest when the ground station connects).
@@ -706,7 +712,22 @@ class MainWindow(QMainWindow):
                 f"E={self.transmitter_view.elevator_center} (trim-aware)"
             )
 
+    def _refresh_slow_ui(self) -> None:
+        # Flush the packet log in batches instead of once per line.
+        if self._pending_log:
+            chunk = self._pending_log
+            self._pending_log = []
+            self.packet_log.appendPlainText("\n".join(chunk))
+        self.packet_summary.setText(
+            f"Frames displayed: {self.event_count}   |   Last: "
+            f"{self.store.last_packet.get('source', '—')} / "
+            f"{self.store.last_packet.get('kind', '—')} "
+            f"seq={self.store.last_packet.get('seq', '—')}"
+        )
+        self._update_gps_panel()
+        self._update_map_from_telemetry()
         self._refresh_command_status()
+        self._refresh_mission_summary()
         self._refresh_health()
 
     def _update_map_from_telemetry(self) -> None:
@@ -733,14 +754,18 @@ class MainWindow(QMainWindow):
         if not rc:
             return
         trim_flags = int(rc.get("trim_flags", 0) or 0)
+        mode = rc.get("throttle_mode")
+        mode_label = {0: "MANUAL (0)", 1: "STABILIZED (1)", 2: "STABILIZED (2)"}.get(mode, "—")
+        rate_pm = int(rc.get("throttle_boost", 0) or 0)
+        rate_label = f"{rate_pm / 10:.0f}%" if rate_pm else "—"
         values = [
             f"{rc.get('throttle_us', '—')} µs",
             f"{rc.get('aileron_us', '—')} µs",
             f"{rc.get('elevator_us', '—')} µs",
             "ARMED" if rc.get("armed") else "DISARMED",
-            {0: "CRUISE (0)", 1: "CRUISE (1)", 2: "REFLEX (2)"}.get(rc.get("throttle_mode"), "—"),
+            mode_label,
             str(rc.get("aux1", "—")),
-            str(rc.get("throttle_boost", "—")),
+            rate_label,
             "PRESSED" if trim_flags & 1 else "released",
             "PRESSED" if trim_flags & 2 else "released",
             "PRESSED" if trim_flags & 4 else "released",
@@ -838,9 +863,11 @@ class MainWindow(QMainWindow):
                     "#55cf9a" if live else ("#7ca7d8" if ready and not has_air_data else "#e2aa57"),
                 )
             rc = self.store.rc
-            rc_age = int(rc.get("rc_age_ms", 65535) or 65535)
             since_rc = (time.monotonic() - self.store.last_rc_packet_at) * 1000 if self.store.last_rc_packet_at else 65535
-            valid = bool(rc.get("valid")) and rc_age + since_rc < 500
+            # rc_valid is set by the aircraft only when it has received a recent
+            # RC packet, so it is the authoritative signal. The only display
+            # condition is that the last control frame is reasonably fresh.
+            valid = bool(rc.get("valid")) and since_rc < 1500
             sniff_fresh = (
                 self.store.last_sniff_at > 0
                 and time.monotonic() - self.store.last_sniff_at < 2.0

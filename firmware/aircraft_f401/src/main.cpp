@@ -46,8 +46,22 @@ constexpr uint32_t SENSOR_PERIOD_MS = 20;
 constexpr uint32_t RADIO_TELEMETRY_PERIOD_MS = 30;
 constexpr uint32_t USB_DIAGNOSTIC_PERIOD_MS = 100;
 constexpr uint16_t SERVO_CENTER_US = 1500;
-constexpr uint16_t MIX_LIMIT_US = 350;
+constexpr uint16_t MIX_LIMIT_US = 175;   // halved elevon throw (was 350)
 constexpr uint32_t GPS_BAUD = 9600;
+
+// --- elevon direction (flip after the bench check) ------------------------
+// ROLL_SIGN/PITCH_SIGN invert each axis independently; SWAP_ELEVONS crosses
+// the two servo outputs. If the surfaces move the wrong way on the bench,
+// change these rather than rewiring.
+constexpr int16_t ROLL_SIGN = 1;
+constexpr int16_t PITCH_SIGN = 1;
+constexpr bool SWAP_ELEVONS = false;
+
+// --- stage B stabilization -------------------------------------------------
+constexpr float MAX_BANK_DEG = 35.0f;   // max commanded roll angle
+constexpr float MAX_PITCH_DEG = 25.0f;  // max commanded pitch angle
+constexpr float ANGLE_KP = 3.0f;        // us of servo per degree of angle error
+constexpr float RATE_KD = 0.15f;        // us of servo per deg/s of rotation
 
 const uint8_t RC_ADDRESS[6] = "NANO1";
 const uint8_t GCS_ADDRESS[6] = "PC01A";
@@ -119,6 +133,10 @@ bool haveRcPacket = false;
 bool haveImuSample = false;
 bool haveMagSample = false;
 bool haveBaroSample = false;
+float attitudeRollDeg = 0.0f;
+float attitudePitchDeg = 0.0f;
+bool attitudeReady = false;
+uint32_t lastAttitudeMs = 0;
 uint16_t telemetrySequence = 0;
 uint16_t telemetryTxOk = 0;
 uint16_t telemetryTxFailed = 0;
@@ -175,28 +193,56 @@ void outputsWrite(uint16_t left, uint16_t right, uint16_t throttle) {
   pwm->setCaptureCompare(3, throttle, MICROSEC_COMPARE_FORMAT);
 }
 
-void applyManualControl(bool linkOk) {
+void applyControl(bool linkOk) {
   if (!linkOk) {
     outputsWrite(SERVO_CENTER_US, SERVO_CENTER_US, ESC_MIN_US);
     return;
   }
 
-  const int32_t roll = static_cast<int32_t>(constrain(rc.aileron, 1000, 2000)) - SERVO_CENTER_US;
-  const int32_t pitch = static_cast<int32_t>(constrain(rc.elevator, 1000, 2000)) - SERVO_CENTER_US;
-  int32_t leftDelta = pitch + roll;
-  int32_t rightDelta = pitch - roll;
-  const int32_t largest = max(abs(leftDelta), abs(rightDelta));
-  if (largest > MIX_LIMIT_US) {
-    leftDelta = leftDelta * MIX_LIMIT_US / largest;
-    rightDelta = rightDelta * MIX_LIMIT_US / largest;
-  }
-
-  const uint16_t left = static_cast<uint16_t>(SERVO_CENTER_US + leftDelta);
-  const uint16_t right = static_cast<uint16_t>(SERVO_CENTER_US + rightDelta);
   uint16_t throttle = ESC_MIN_US;
   if (rc.armed) {
     const uint16_t input = constrain(rc.throttle, 1000, 2000);
     throttle = map(input, 1000, 2000, ESC_MIN_US, ESC_MAX_US);
+  }
+
+  // The A4 knob on the transmitter sets control authority (250..1000 per-mille).
+  const float rate = constrain(static_cast<int>(rc.pot2), 250, 1000) / 1000.0f;
+
+  int32_t rollCmd = 0;
+  int32_t pitchCmd = 0;
+
+  const bool stabilize = rc.switch2State != 0 && attitudeReady;
+  if (!stabilize) {
+    // Manual passthrough (dual-rate throw).
+    rollCmd = static_cast<int32_t>(ROLL_SIGN * (constrain(rc.aileron, 1000, 2000) - SERVO_CENTER_US) * rate);
+    pitchCmd = static_cast<int32_t>(PITCH_SIGN * (constrain(rc.elevator, 1000, 2000) - SERVO_CENTER_US) * rate);
+  } else {
+    // Self-level: the stick commands a target angle; a P(D) controller drives
+    // the elevons to hold it. The knob scales the commanded angle.
+    const float aileronNorm = (constrain(rc.aileron, 1000, 2000) - SERVO_CENTER_US) / 350.0f;
+    const float elevatorNorm = (constrain(rc.elevator, 1000, 2000) - SERVO_CENTER_US) / 350.0f;
+    const float targetRoll = ROLL_SIGN * aileronNorm * MAX_BANK_DEG * rate;
+    const float targetPitch = PITCH_SIGN * elevatorNorm * MAX_PITCH_DEG * rate;
+    const float rollErr = targetRoll - attitudeRollDeg;
+    const float pitchErr = targetPitch - attitudePitchDeg;
+    const float gyroRoll = sensorData.gyroCentiDps[0] / 100.0f;   // deg/s
+    const float gyroPitch = sensorData.gyroCentiDps[1] / 100.0f;  // deg/s
+    rollCmd = static_cast<int32_t>(ANGLE_KP * rollErr - RATE_KD * gyroRoll);
+    pitchCmd = static_cast<int32_t>(ANGLE_KP * pitchErr - RATE_KD * gyroPitch);
+  }
+
+  // Standard elevon mix: pitch is common mode, roll is differential.
+  int32_t leftDelta = pitchCmd + rollCmd;
+  int32_t rightDelta = pitchCmd - rollCmd;
+  leftDelta = constrain(leftDelta, -MIX_LIMIT_US, MIX_LIMIT_US);
+  rightDelta = constrain(rightDelta, -MIX_LIMIT_US, MIX_LIMIT_US);
+
+  uint16_t left = SERVO_CENTER_US + leftDelta;
+  uint16_t right = SERVO_CENTER_US + rightDelta;
+  if (SWAP_ELEVONS) {
+    const uint16_t tmp = left;
+    left = right;
+    right = tmp;
   }
   outputsWrite(left, right, throttle);
 }
@@ -310,6 +356,34 @@ void sampleSensors() {
       haveBaroSample = true;
     }
   }
+}
+
+// Complementary-filter attitude estimate (roll/pitch only; yaw comes from GPS
+// course later). The accelerometer is the long-term level reference and the
+// gyro provides the short-term rate.
+void updateAttitude() {
+  if (!haveImuSample) return;
+  const float ax = sensorData.accelMg[0] / 1000.0f;
+  const float ay = sensorData.accelMg[1] / 1000.0f;
+  const float az = sensorData.accelMg[2] / 1000.0f;
+  const float gyroRoll = sensorData.gyroCentiDps[0] / 100.0f;   // deg/s
+  const float gyroPitch = sensorData.gyroCentiDps[1] / 100.0f;  // deg/s
+  const float rollAcc = atan2f(ay, az) * 57.2957795f;
+  const float pitchAcc = atan2f(-ax, sqrtf(ay * ay + az * az)) * 57.2957795f;
+
+  const uint32_t now = millis();
+  if (!attitudeReady) {
+    attitudeRollDeg = rollAcc;
+    attitudePitchDeg = pitchAcc;
+    attitudeReady = true;
+    lastAttitudeMs = now;
+    return;
+  }
+  float dt = (now - lastAttitudeMs) / 1000.0f;
+  lastAttitudeMs = now;
+  if (dt <= 0.0f || dt > 0.25f) dt = 0.02f;
+  attitudeRollDeg = 0.98f * (attitudeRollDeg + gyroRoll * dt) + 0.02f * rollAcc;
+  attitudePitchDeg = 0.98f * (attitudePitchDeg + gyroPitch * dt) + 0.02f * pitchAcc;
 }
 
 float parseNmeaFloat(const char *value) {
@@ -831,7 +905,7 @@ void setup() {
   while (!Serial && millis() - serialWaitStart < 1500) delay(10);
 #else
   outputsBegin();
-  applyManualControl(false);
+  applyControl(false);
 #endif
 
   // Arm the watchdog before peripheral init. If a driver ever wedges again the
@@ -865,6 +939,7 @@ void loop() {
 #endif
   IWatchdog.reload();
   sampleSensors();
+  updateAttitude();
   updateGps();
 
   // Self-healing peripherals: retry a failed radio, re-arm a wedged radio, and
@@ -921,7 +996,7 @@ void loop() {
     printUsbDiagnostic(false);
   }
 #else
-  applyManualControl(linkOk);
+  applyControl(linkOk);
   updateLed(linkOk);
   if (radioReady && receivedPacket && millis() - lastRadioTelemetryMs >= RADIO_TELEMETRY_PERIOD_MS) {
     sendRadioTelemetry(linkOk);

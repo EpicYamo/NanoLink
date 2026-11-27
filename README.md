@@ -23,10 +23,11 @@ flowchart LR
   computer over USB serial. The aircraft does not need a computer connection
   during operation.
 
-The current firmware supports manual RC control, elevon mixing, link-loss
-failsafe, MPU9250/BMP280/GPS data acquisition, and nRF24 telemetry. Flight
-stabilization and computer-issued flight commands are not part of the current
-release.
+The current firmware supports manual RC control with dual-rate throw, elevon
+mixing, a self-level stabilization mode (selected with the transmitter's
+3-position switch), link-loss failsafe, MPU9250/BMP280/GPS data acquisition,
+and nRF24 telemetry. Autonomous navigation and computer-issued flight commands
+are not part of the current release.
 
 ## Hardware
 

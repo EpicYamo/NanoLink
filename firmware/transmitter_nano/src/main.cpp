@@ -19,7 +19,7 @@ constexpr uint8_t PIN_RADIO_CSN = 10;
 constexpr uint8_t PIN_THROTTLE = A2;
 constexpr uint8_t PIN_AILERON = A1;
 constexpr uint8_t PIN_ELEVATOR = A0;
-constexpr uint8_t PIN_THROTTLE_BOOST = A4;
+constexpr uint8_t PIN_RATE_KNOB = A4;   // control-throw / bank-angle limit knob
 constexpr uint8_t PIN_ARM_SWITCH = A6;
 constexpr uint8_t PIN_THROTTLE_MODE = A7;
 constexpr uint8_t PIN_ELEVATOR_TRIM_UP = 3;
@@ -34,10 +34,9 @@ constexpr int16_t AILERON_MIN_US = 1150;
 constexpr int16_t AILERON_MAX_US = 1850;
 constexpr int16_t ELEVATOR_MIN_US = 1150;
 constexpr int16_t ELEVATOR_MAX_US = 1850;
-constexpr int16_t THROTTLE_CENTER_RAW = 509;
 constexpr int16_t THROTTLE_FULL_RAW = 950;
-constexpr int16_t THROTTLE_DEADBAND = 6;
-constexpr int16_t THROTTLE_BOOST_MAX = 500;
+constexpr int16_t RATE_MIN_PM = 250;   // 25% control authority
+constexpr int16_t RATE_MAX_PM = 1000;  // 100% control authority
 constexpr int16_t TRIM_STEP_US = 6;
 constexpr int16_t TRIM_MAX_US = 150;
 constexpr uint32_t TRIM_REPEAT_MS = 60;
@@ -109,23 +108,17 @@ void readSwitches() {
 #else
   packet.pot1 = 0;
 #endif
-  packet.pot2 = analogRead(PIN_THROTTLE_BOOST);
+  // The A4 knob sets the control-throw / bank-angle limit (dual rates),
+  // 25%..100%. The aircraft scales its elevon throw and stabilization
+  // bank angle by this value.
+  packet.pot2 = map(constrain(analogRead(PIN_RATE_KNOB), 0, 1023), 0, 1023,
+                    RATE_MIN_PM, RATE_MAX_PM);
 }
 
 void updateThrottle() {
-  const int rawThrottle = analogRead(PIN_THROTTLE);
-  const bool reflexMode = packet.switch2State == 2;
-  const int origin = reflexMode ? THROTTLE_CENTER_RAW : 0;
-  const int boost = map(packet.pot2, 0, 1023, 0, THROTTLE_BOOST_MAX);
-
-  int distance = rawThrottle - origin;
-  if (reflexMode && abs(distance) <= THROTTLE_DEADBAND) distance = 0;
-  if (distance < 0) distance = 0;
-  distance += boost;
-
-  const int span = THROTTLE_FULL_RAW - origin;
-  distance = constrain(distance, 0, span);
-  packet.throttle = map(distance, 0, span, 1000, 2000);
+  // Simple linear throttle; the reflex/cruise throttle modes are gone.
+  const int distance = constrain(analogRead(PIN_THROTTLE), 0, THROTTLE_FULL_RAW);
+  packet.throttle = map(distance, 0, THROTTLE_FULL_RAW, 1000, 2000);
 }
 
 void updateTrims() {

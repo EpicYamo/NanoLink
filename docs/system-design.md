@@ -47,8 +47,19 @@ The desktop app also includes a map and mission planner: the first GPS fix sets
 home, a map click places a waypoint with a target altitude, and the planned
 sequence (waypoint, return home, loiter circle) is displayed with distances and
 bearings. This is a planning/visualization feature only — executing a mission
-requires aircraft stabilization and a command uplink, which are future firmware
-stages.
+requires a navigation controller, which is a future firmware stage.
+
+## Stabilization (stage B)
+
+The aircraft implements a self-level mode using a complementary filter (gyro
+integration blended with the accelerometer level reference) and a P(D) angle
+controller on roll and pitch. The transmitter's 3-position switch selects the
+mode: position 0 is manual passthrough, positions 1 and 2 engage self-level.
+The A4 knob on the transmitter sets control authority (25%..100%): in manual
+mode it scales elevon throw, in stabilized mode it scales the commanded bank
+angle. Direction and axis mapping are configured by `ROLL_SIGN`,
+`PITCH_SIGN`, and `SWAP_ELEVONS` in the aircraft firmware and must be verified
+on the bench before first flight.
 
 ## Ground-to-aircraft command link
 
@@ -65,8 +76,8 @@ Commands are rate-limited by design: the aircraft's single radio alternates
 briefly between RC listening, telemetry transmission, and command acknowledgment.
 RC always keeps priority; a lost command simply reports `failed` on the ground
 station. In the current stage the aircraft only **stores and acknowledges**
-missions — `start_mission` records a request but does not fly it, because
-stabilization and navigation controllers are not implemented yet.
+missions — `start_mission` records a request but does not fly it, because the
+navigation controller is not implemented yet.
 
 ## Transmitter RC sniffer (bench diagnostic)
 
@@ -82,10 +93,13 @@ air link points to the aircraft side; no sniff points to the transmitter.
 ## Control surfaces and failsafe
 
 The aircraft controller mixes the transmitter's roll and pitch channels into
-left and right elevon commands. Servo direction and travel depend on the
-airframe's linkage and must be verified on the bench. The transmitter arm bit
-gates the ESC output. If valid RC packets stop arriving, the controller sets
-the ESC to its configured idle pulse and centers both elevons.
+left and right elevon commands. Throw is halved from the original build and the
+transmitter's A4 knob scales it further (dual rates). Servo direction and
+travel depend on the airframe's linkage and must be verified on the bench; the
+`ROLL_SIGN`, `PITCH_SIGN`, and `SWAP_ELEVONS` constants correct any reversal.
+The transmitter arm bit gates the ESC output. If valid RC packets stop arriving,
+the controller sets the ESC to its configured idle pulse and centers both
+elevons.
 
 ## Firmware projects
 

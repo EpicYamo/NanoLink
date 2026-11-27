@@ -314,10 +314,9 @@ void renderOled() {
       oled.setCursor(0, 52); oled.print(F("A ")); oled.print(latestControl.aileronUs);
       oled.print(F(" E ")); oled.print(latestControl.elevatorUs);
       const uint8_t mode = latestControl.throttleMode;
-      const uint8_t trims = static_cast<uint8_t>((latestControl.pot1 >> NanoLinkProtocol::POT1_TRIM_SHIFT) & 0x0F);
       oled.setCursor(0, 63); oled.print(F("MODE "));
-      oled.print(mode == 2 ? F("REFLEX") : F("CRUISE"));
-      oled.print(F(" TRIM ")); oled.print(trims, HEX);
+      oled.print(mode == 0 ? F("MANUAL") : F("STABIL"));
+      oled.print(F(" RATE ")); oled.print(latestControl.pot2 / 10); oled.print(F("%"));
     }
   } else if (page == 2) {
     oled.drawStr(0, 10, "Aircraft Sensors");
