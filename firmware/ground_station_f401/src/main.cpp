@@ -758,9 +758,29 @@ void radioDiagSetup() {
     }
   }
 
-  // Probe WITHOUT beginTransaction — SPI is already configured by begin().
-  // beginTransaction internally resets SPI1 (FORCE_RESET/RELEASE_RESET) and
-  // then fails to properly reconfigure it, which is the root cause of the hang.
+  // Test 1: Raw register transfer (proven to work earlier)
+  diagSerial("raw_after_begin");
+  {
+    digitalWrite(PIN_NRF_CSN, LOW);
+    delayMicroseconds(5);
+    Serial.print(F("{\"source\":\"ground_station\",\"kind\":\"radio_test\",\"stage\":\"pre_raw\",\"cr1\":"));
+    Serial.print(SPI1->CR1);
+    Serial.print(F(",\"sr\":"));
+    Serial.print(SPI1->SR);
+    Serial.println('}');
+    while (!(SPI1->SR & SPI_SR_TXE));
+    SPI1->DR = 0xFF;
+    uint32_t timeout = 10000;
+    while (!(SPI1->SR & SPI_SR_RXNE) && --timeout);
+    const uint8_t rawAfterBegin = (timeout > 0) ? (uint8_t)(SPI1->DR) : 0;
+    digitalWrite(PIN_NRF_CSN, HIGH);
+    Serial.print(F("{\"source\":\"ground_station\",\"kind\":\"radio_test\",\"stage\":\"raw_after_begin\",\"status\":"));
+    Serial.print(rawAfterBegin);
+    Serial.println('}');
+  }
+  delay(500);
+
+  // Test 2: Arduino SPI.transfer() (the one that hangs)
   diagDraw("5A NO XACT", false);
   diagSerial("probe_no_xact");
   {
