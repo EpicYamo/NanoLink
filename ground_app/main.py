@@ -438,6 +438,10 @@ class MainWindow(QMainWindow):
         abort_button.clicked.connect(lambda _checked=False: self._send_command_line("CMD,abort_mission"))
         side_layout.addWidget(abort_button)
 
+        rth_button = QPushButton("Request RTH (draft)")
+        rth_button.clicked.connect(lambda _checked=False: self._send_command_line("CMD,rth"))
+        side_layout.addWidget(rth_button)
+
         zoom_row = QHBoxLayout()
         zoom_in_button = QPushButton("Zoom +")
         zoom_in_button.clicked.connect(lambda _checked=False: self.map_widget.zoom_in())
@@ -465,6 +469,7 @@ class MainWindow(QMainWindow):
         0: "no mission on aircraft",
         1: "mission loaded on aircraft",
         2: "start requested — execution NOT implemented",
+        3: "RTH requested — execution NOT implemented",
     }
 
     def _send_command_line(self, line: str) -> None:
@@ -842,7 +847,7 @@ class MainWindow(QMainWindow):
                 ready = bool(radio.get("radio_ready")) and bool(radio.get("radio_chip_ok"))
                 age = int(radio.get("telemetry_age_ms", 65535) or 65535)
                 has_air_data = self.store.last_rf_packet_at > 0
-                live = ready and has_air_data and age < 3000
+                live = ready and has_air_data and age < 5000
                 air_tx = ""
                 if "air_tx_ok" in radio or "air_tx_failed" in radio:
                     air_tx = f" · aircraft TX {radio.get('air_tx_ok', 0)}/{radio.get('air_tx_failed', 0)} failed"
@@ -871,7 +876,7 @@ class MainWindow(QMainWindow):
             # rc_valid is set by the aircraft only when it has received a recent
             # RC packet, so it is the authoritative signal. The only display
             # condition is that the last control frame is reasonably fresh.
-            valid = bool(rc.get("valid")) and since_rc < 3000
+            valid = bool(rc.get("valid")) and since_rc < 5000
             sniff_fresh = (
                 self.store.last_sniff_at > 0
                 and time.monotonic() - self.store.last_sniff_at < 2.0
@@ -951,7 +956,7 @@ class MainWindow(QMainWindow):
         telemetry_stale = (
             self.store.source == "ground_station"
             and self.store.last_rf_packet_at
-            and time.monotonic() - self.store.last_rf_packet_at > 3.0
+            and time.monotonic() - self.store.last_rf_packet_at > 5.0
         )
         if self.store.source == "ground_station" and not self.store.last_rf_packet_at:
             self.tiles["gps"].set_state("NO AIRCRAFT DATA", "GPS state is unknown until telemetry arrives", "#7ca7d8")

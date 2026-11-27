@@ -43,7 +43,7 @@ constexpr uint8_t RF_CHANNEL = 90;
 constexpr uint32_t RF_SPI_HZ = 4000000UL;
 constexpr uint32_t RC_TIMEOUT_MS = 500;
 constexpr uint32_t SENSOR_PERIOD_MS = 20;
-constexpr uint32_t RADIO_TELEMETRY_PERIOD_MS = 30;
+constexpr uint32_t RADIO_TELEMETRY_PERIOD_MS = 3000;  // dump every 3 s
 constexpr uint32_t USB_DIAGNOSTIC_PERIOD_MS = 100;
 constexpr uint16_t SERVO_CENTER_US = 1500;
 constexpr uint16_t MIX_LIMIT_US = 300;   // max elevon throw (us), adjustable
@@ -146,6 +146,13 @@ bool attitudeReady = false;
 uint32_t lastAttitudeMs = 0;
 // Level/gyro calibration is set via the ground-station CMD_CALIBRATE_LEVEL
 // command (the app's "Calibrate level/gyro" button), not automatically.
+// The level reference is captured immediately; the gyro bias is averaged over
+// the following ~1 s while the aircraft should be held still.
+constexpr uint8_t GYRO_CALIB_SAMPLES = 50;
+bool gyroCalibrating = false;
+uint8_t gyroCalibCount = 0;
+float gyroCalibSumRoll = 0.0f;
+float gyroCalibSumPitch = 0.0f;
 float gyroBiasRoll = 0.0f;
 float gyroBiasPitch = 0.0f;
 float rollZero = 0.0f;
@@ -161,7 +168,6 @@ uint32_t lastUsbDiagnosticMs = 0;
 uint32_t lastRadioAttemptMs = 0;
 uint32_t lastRadioHealthMs = 0;
 uint32_t lastSensorRetryMs = 0;
-uint8_t telemetryTypeIndex = 0;
 char nmeaLine[120]{};
 uint8_t nmeaLength = 0;
 
@@ -241,17 +247,20 @@ void applyControl(bool linkOk) {
     pitchCmd = static_cast<int32_t>(PITCH_SIGN * (pitchIn - SERVO_CENTER_US) * rate);
   } else {
     // Self-level: the stick commands a target angle; a P(D) controller drives
-    // the elevons to hold it. The knob scales the commanded angle.
+    // the elevons to hold it. The knob scales the correction authority exactly
+    // like manual mode, so the pot is a single "throw/angle" limit in both.
     const float rollNorm = (rollIn - SERVO_CENTER_US) / 350.0f;
     const float pitchNorm = (pitchIn - SERVO_CENTER_US) / 350.0f;
-    const float targetRoll = ROLL_SIGN * rollNorm * MAX_BANK_DEG * rate;
-    const float targetPitch = PITCH_SIGN * pitchNorm * MAX_PITCH_DEG * rate;
+    const float targetRoll = ROLL_SIGN * rollNorm * MAX_BANK_DEG;
+    const float targetPitch = PITCH_SIGN * pitchNorm * MAX_PITCH_DEG;
     const float rollErr = targetRoll - attitudeRollDeg;
     const float pitchErr = targetPitch - attitudePitchDeg;
     const float gyroRoll = sensorData.gyroCentiDps[0] / 100.0f;   // deg/s
     const float gyroPitch = sensorData.gyroCentiDps[1] / 100.0f;  // deg/s
-    rollCmd = static_cast<int32_t>(ANGLE_KP * rollErr - RATE_KD * ROLL_RATE_SIGN * gyroRoll);
-    pitchCmd = static_cast<int32_t>(ANGLE_KP * pitchErr - RATE_KD * PITCH_RATE_SIGN * gyroPitch);
+    const float rawRoll = ANGLE_KP * rollErr - RATE_KD * ROLL_RATE_SIGN * gyroRoll;
+    const float rawPitch = ANGLE_KP * pitchErr - RATE_KD * PITCH_RATE_SIGN * gyroPitch;
+    rollCmd = static_cast<int32_t>(rawRoll * rate);
+    pitchCmd = static_cast<int32_t>(rawPitch * rate);
   }
 
   // Standard elevon mix: pitch is common mode, roll is differential.
@@ -402,6 +411,18 @@ void updateAttitude() {
   const float rollAcc = atan2f(ay, az) * 57.2957795f;
   const float pitchAcc = atan2f(-ax, sqrtf(ay * ay + az * az)) * 57.2957795f;
 
+  // Average the gyro while the aircraft is held still during calibration.
+  if (gyroCalibrating) {
+    gyroCalibSumRoll += gyroRoll;
+    gyroCalibSumPitch += gyroPitch;
+    ++gyroCalibCount;
+    if (gyroCalibCount >= GYRO_CALIB_SAMPLES) {
+      gyroBiasRoll = gyroCalibSumRoll / gyroCalibCount;
+      gyroBiasPitch = gyroCalibSumPitch / gyroCalibCount;
+      gyroCalibrating = false;
+    }
+  }
+
   const uint32_t now = millis();
 
   if (!attitudeReady) {
@@ -423,8 +444,8 @@ void updateAttitude() {
   const float rollRef = rollAcc - rollZero;
   const float pitchRef = pitchAcc - pitchZero;
 
-  attitudeRollDeg = 0.98f * (attitudeRollDeg + gr * dt) + 0.02f * rollRef;
-  attitudePitchDeg = 0.98f * (attitudePitchDeg + gp * dt) + 0.02f * pitchRef;
+  attitudeRollDeg = 0.96f * (attitudeRollDeg + gr * dt) + 0.04f * rollRef;
+  attitudePitchDeg = 0.96f * (attitudePitchDeg + gp * dt) + 0.04f * pitchRef;
 }
 
 float parseNmeaFloat(const char *value) {
@@ -566,8 +587,7 @@ void radioConfigureReceiver() {
   radio.setChannel(RF_CHANNEL);
   radio.setDataRate(RF24_250KBPS);
   radio.setPALevel(RF24_PA_LOW);
-  radio.setAutoAck(true);
-  radio.setRetries(0, 0);
+  radio.setAutoAck(false);
   radio.startListening();
 }
 
@@ -584,9 +604,8 @@ void transmitFrame(Frame &frame, uint8_t type) {
   fillHeader(frame, type);
   radio.stopListening();
   radio.openWritingPipe(GCS_ADDRESS);
-  radio.setRetries(0, 0);
-  if (radio.write(&frame, sizeof(frame))) ++telemetryTxOk;
-  else ++telemetryTxFailed;
+  radio.write(&frame, sizeof(frame), true);  // fire-and-forget (no auto-ACK)
+  ++telemetryTxOk;
   radioConfigureReceiver();
 }
 
@@ -671,21 +690,27 @@ void handleCommandFrame() {
       mission.state = NanoLinkProtocol::MISSION_NONE;
       break;
     case NanoLinkProtocol::CMD_CALIBRATE_LEVEL:
-      // Capture the current accelerometer attitude as the level reference and
-      // the current gyro reading as the bias. Hold the aircraft in the desired
-      // level attitude when sending this.
+      // Capture the current accelerometer attitude as the level reference, then
+      // average the gyro over the next ~1 s as the bias. Hold the aircraft in
+      // the desired level attitude and keep it still for a second.
       {
         const float ax = sensorData.accelMg[0] / 1000.0f;
         const float ay = sensorData.accelMg[1] / 1000.0f;
         const float az = sensorData.accelMg[2] / 1000.0f;
         rollZero = atan2f(ay, az) * 57.2957795f;
         pitchZero = atan2f(-ax, sqrtf(ay * ay + az * az)) * 57.2957795f;
-        gyroBiasRoll = sensorData.gyroCentiDps[0] / 100.0f;
-        gyroBiasPitch = sensorData.gyroCentiDps[1] / 100.0f;
         attitudeRollDeg = 0.0f;
         attitudePitchDeg = 0.0f;
         attitudeReady = true;
+        gyroCalibrating = true;
+        gyroCalibCount = 0;
+        gyroCalibSumRoll = 0.0f;
+        gyroCalibSumPitch = 0.0f;
       }
+      break;
+    case NanoLinkProtocol::CMD_RTH:
+      // Draft: record the request only. Navigation execution comes later.
+      mission.state = NanoLinkProtocol::MISSION_RTH_REQUESTED;
       break;
     default:
       result = NanoLinkProtocol::CMD_RESULT_UNKNOWN_OP;
@@ -698,9 +723,11 @@ void handleCommandFrame() {
 }
 // -----------------------------------------------------------------------------
 
-void sendRadioTelemetry(bool linkOk) {
-  const uint8_t type = telemetryTypeIndex++ % 3;
-  if (type == 0) {
+// Send the full telemetry snapshot (sensor + control + gps) as one burst. This
+// runs every 3 s and on a transmitter trigger. Fire-and-forget: no auto-ACK, so
+// the aircraft stays in receive mode ~99.9% of the time.
+void sendTelemetryDump(bool linkOk) {
+  {
     NanoLinkProtocol::SensorFrame frame{};
     frame.flags = (haveImuSample ? NanoLinkProtocol::SENSOR_IMU_OK : 0) |
                   (haveMagSample ? NanoLinkProtocol::SENSOR_MAG_OK : 0) |
@@ -711,7 +738,9 @@ void sendRadioTelemetry(bool linkOk) {
     frame.pressurePa = sensorData.pressurePa;
     frame.temperatureCentiC = sensorData.temperatureCentiC;
     transmitFrame(frame, NanoLinkProtocol::TYPE_SENSORS);
-  } else if (type == 1) {
+  }
+
+  {
     NanoLinkProtocol::ControlFrame frame{};
     frame.flags = (linkOk ? NanoLinkProtocol::CONTROL_RC_VALID : 0) |
                   (rc.armed ? NanoLinkProtocol::CONTROL_ARMED : 0) |
@@ -728,7 +757,9 @@ void sendRadioTelemetry(bool linkOk) {
     frame.telemetryTxOk = telemetryTxOk;
     frame.telemetryTxFailed = telemetryTxFailed;
     transmitFrame(frame, NanoLinkProtocol::TYPE_CONTROL);
-  } else {
+  }
+
+  {
     NanoLinkProtocol::GpsFrame frame{};
     frame.flags = (gps.streamSeen ? NanoLinkProtocol::GPS_STREAM_OK : 0) |
                   (gps.fix ? NanoLinkProtocol::GPS_FIX_OK : 0);
@@ -1022,7 +1053,6 @@ void loop() {
     if (!barometerReady) initBarometer();
   }
 
-  bool receivedPacket = false;
   if (radioReady) {
     uint8_t pipe = 0;
     while (radio.available(&pipe)) {
@@ -1041,7 +1071,6 @@ void loop() {
         lastRcPacketMs = millis();
         haveRcPacket = true;
         ++rcPacketCount;
-        receivedPacket = true;
       }
     }
   }
@@ -1056,8 +1085,22 @@ void loop() {
 #else
   applyControl(linkOk);
   updateLed(linkOk);
-  if (radioReady && receivedPacket && millis() - lastRadioTelemetryMs >= RADIO_TELEMETRY_PERIOD_MS) {
-    sendRadioTelemetry(linkOk);
+
+  // Transmitter trigger buttons (throttle-stick trims, pot1 bits 10/11).
+  // Edge-detect the dump trigger and record the RTH request (draft).
+  static bool dumpTriggerPrev = false;
+  const bool dumpTrigger = (rc.pot1 >> NanoLinkProtocol::POT1_DUMP_TRIGGER_SHIFT) & 1u;
+  const bool rthTrigger = (rc.pot1 >> NanoLinkProtocol::POT1_RTH_TRIGGER_SHIFT) & 1u;
+  if (dumpTrigger && !dumpTriggerPrev) {
+    lastRadioTelemetryMs = 0;  // force an immediate dump below
+  }
+  dumpTriggerPrev = dumpTrigger;
+  if (rthTrigger && mission.state != NanoLinkProtocol::MISSION_RTH_REQUESTED) {
+    mission.state = NanoLinkProtocol::MISSION_RTH_REQUESTED;  // draft: recorded only
+  }
+
+  if (radioReady && millis() - lastRadioTelemetryMs >= RADIO_TELEMETRY_PERIOD_MS) {
+    sendTelemetryDump(linkOk);
     lastRadioTelemetryMs = millis();
   }
 #endif

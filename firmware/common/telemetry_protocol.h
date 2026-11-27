@@ -33,10 +33,12 @@ constexpr uint8_t CMD_SET_LOITER = 3;
 constexpr uint8_t CMD_START_MISSION = 4;
 constexpr uint8_t CMD_ABORT_MISSION = 5;
 constexpr uint8_t CMD_CALIBRATE_LEVEL = 6;
+constexpr uint8_t CMD_RTH = 7;  // draft: return-to-home request
 
 constexpr uint8_t MISSION_NONE = 0;
 constexpr uint8_t MISSION_LOADED = 1;
 constexpr uint8_t MISSION_START_REQUESTED = 2;
+constexpr uint8_t MISSION_RTH_REQUESTED = 3;  // draft: recorded only
 
 constexpr uint8_t CMD_RESULT_OK = 0;
 constexpr uint8_t CMD_RESULT_NOT_READY = 1;
@@ -44,6 +46,9 @@ constexpr uint8_t CMD_RESULT_UNKNOWN_OP = 2;
 
 constexpr uint16_t POT1_AUX_MASK = 0x03FF;
 constexpr uint8_t POT1_TRIM_SHIFT = 12;
+// Bits 10 and 11 of pot1 carry the two throttle-stick trigger buttons.
+constexpr uint8_t POT1_DUMP_TRIGGER_SHIFT = 10;
+constexpr uint8_t POT1_RTH_TRIGGER_SHIFT = 11;
 constexpr uint8_t TRIM_ELEVATOR_UP = 1u << 0;
 constexpr uint8_t TRIM_ELEVATOR_DOWN = 1u << 1;
 constexpr uint8_t TRIM_AILERON_RIGHT = 1u << 2;

@@ -45,7 +45,7 @@ inline bool begin(RF24 &radio, uint8_t channel, rf24_pa_dbm_e power,
       if (radio.getChannel() == channel) {
         radio.setDataRate(RF24_250KBPS);
         radio.setPALevel(power);
-        radio.setAutoAck(true);
+        radio.setAutoAck(false);  // no auto-ACK: every link is fire-and-forget
         radio.setRetries(0, 0);
         return true;
       }

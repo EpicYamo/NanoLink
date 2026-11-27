@@ -68,6 +68,7 @@ const char *opcodeName(uint8_t opcode) {
     case NanoLinkProtocol::CMD_START_MISSION: return "start_mission";
     case NanoLinkProtocol::CMD_ABORT_MISSION: return "abort_mission";
     case NanoLinkProtocol::CMD_CALIBRATE_LEVEL: return "calibrate_level";
+    case NanoLinkProtocol::CMD_RTH: return "rth";
     default: return "unknown";
   }
 }
@@ -114,12 +115,10 @@ void sendCommand(uint8_t opcode, const uint8_t *payload) {
 
   radio.stopListening();
   radio.openWritingPipe(CMD_ADDRESS);
-  radio.setRetries(2, 5);
-  const bool sent = radio.write(&frame, sizeof(frame));
-  radio.setRetries(0, 0);
+  radio.write(&frame, sizeof(frame), true);  // fire-and-forget (no auto-ACK)
   radioStartListening();
 
-  printCommandStatus(opcodeName(opcode), seq, sent);
+  printCommandStatus(opcodeName(opcode), seq, true);
 }
 
 void handleCommandLine(char *line) {
@@ -162,6 +161,8 @@ void handleCommandLine(char *line) {
     sendCommand(NanoLinkProtocol::CMD_ABORT_MISSION, payload);
   } else if (strcmp(op, "calibrate_level") == 0) {
     sendCommand(NanoLinkProtocol::CMD_CALIBRATE_LEVEL, payload);
+  } else if (strcmp(op, "rth") == 0) {
+    sendCommand(NanoLinkProtocol::CMD_RTH, payload);
   }
 }
 

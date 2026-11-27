@@ -26,6 +26,11 @@ constexpr uint8_t PIN_ELEVATOR_TRIM_UP = 3;
 constexpr uint8_t PIN_ELEVATOR_TRIM_DOWN = 4;
 constexpr uint8_t PIN_AILERON_TRIM_RIGHT = 5;
 constexpr uint8_t PIN_AILERON_TRIM_LEFT = 6;
+// Two unused throttle-stick trim buttons, repurposed as triggers:
+//   TRIGGER_DUMP -> force the aircraft to send a telemetry dump immediately
+//   TRIGGER_RTH  -> return-to-home request (draft)
+constexpr uint8_t PIN_TRIGGER_DUMP = 2;
+constexpr uint8_t PIN_TRIGGER_RTH = 7;
 
 constexpr uint8_t RADIO_CHANNEL = 90;
 const uint8_t RADIO_ADDRESS[6] = "NANO1";
@@ -75,6 +80,8 @@ uint32_t lastTrimChangeMs = 0;
 bool trimDirty = false;
 bool radioReady = false;
 uint8_t trimButtonFlags = 0;
+bool dumpTrigger = false;
+bool rthTrigger = false;
 
 int16_t stickPulse(uint16_t raw, int16_t low, int16_t high, bool reverse) {
   return reverse ? map(raw, 0, 1023, high, low)
@@ -190,6 +197,11 @@ void readAndFilterSticks() {
                               ELEVATOR_MIN_US, ELEVATOR_MAX_US);
 }
 
+void readTriggers() {
+  dumpTrigger = digitalRead(PIN_TRIGGER_DUMP) == LOW;
+  rthTrigger = digitalRead(PIN_TRIGGER_RTH) == LOW;
+}
+
 } // namespace
 
 void setup() {
@@ -197,6 +209,8 @@ void setup() {
   pinMode(PIN_ELEVATOR_TRIM_DOWN, INPUT_PULLUP);
   pinMode(PIN_AILERON_TRIM_RIGHT, INPUT_PULLUP);
   pinMode(PIN_AILERON_TRIM_LEFT, INPUT_PULLUP);
+  pinMode(PIN_TRIGGER_DUMP, INPUT_PULLUP);
+  pinMode(PIN_TRIGGER_RTH, INPUT_PULLUP);
   loadTrims();
 
   packet.throttle = 1000;
@@ -209,13 +223,7 @@ void setup() {
     radio.openWritingPipe(RADIO_ADDRESS);
     radio.setChannel(RADIO_CHANNEL);
     radio.setDataRate(RF24_250KBPS);
-#if BENCH_RF
-    radio.setPALevel(RF24_PA_LOW);
-    radio.setRetries(2, 5);
-#else
     radio.setPALevel(RF24_PA_MAX);
-    radio.setRetries(5, 15);
-#endif
     radio.stopListening();
   }
 }
@@ -225,9 +233,12 @@ void loop() {
   readAndFilterSticks();
   updateThrottle();
   updateTrims();
+  readTriggers();
   packet.pot1 = (packet.pot1 & NanoLinkProtocol::POT1_AUX_MASK) |
+                (dumpTrigger ? (1u << NanoLinkProtocol::POT1_DUMP_TRIGGER_SHIFT) : 0) |
+                (rthTrigger ? (1u << NanoLinkProtocol::POT1_RTH_TRIGGER_SHIFT) : 0) |
                 (static_cast<uint16_t>(trimButtonFlags) << NanoLinkProtocol::POT1_TRIM_SHIFT);
 
-  if (radioReady) radio.write(&packet, sizeof(packet));
+  if (radioReady) radio.write(&packet, sizeof(packet), true);  // fire-and-forget
   delay(8);
 }
