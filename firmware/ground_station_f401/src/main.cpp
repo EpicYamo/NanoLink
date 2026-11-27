@@ -20,6 +20,7 @@ constexpr uint32_t RF_SPI_HZ = 4000000UL;
 constexpr uint32_t STATUS_PERIOD_MS = 1000;
 
 const uint8_t GCS_ADDRESS[6] = "PC01A";
+const uint8_t CMD_ADDRESS[6] = "CMND1";
 RF24 radio(PIN_NRF_CE, PIN_NRF_CSN, RF_SPI_HZ);
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C oled(U8G2_R0, U8X8_PIN_NONE);
 
@@ -41,6 +42,130 @@ NanoLinkProtocol::SensorFrame latestSensor{};
 NanoLinkProtocol::ControlFrame latestControl{};
 NanoLinkProtocol::GpsFrame latestGps{};
 uint8_t oledAddress = 0;
+
+// --- computer-to-aircraft command bridge -------------------------------------
+char inputLine[96]{};
+uint8_t inputLength = 0;
+uint16_t commandSequence = 0;
+
+const char *opcodeName(uint8_t opcode) {
+  switch (opcode) {
+    case NanoLinkProtocol::CMD_SET_HOME: return "set_home";
+    case NanoLinkProtocol::CMD_SET_WAYPOINT: return "set_waypoint";
+    case NanoLinkProtocol::CMD_SET_LOITER: return "set_loiter";
+    case NanoLinkProtocol::CMD_START_MISSION: return "start_mission";
+    case NanoLinkProtocol::CMD_ABORT_MISSION: return "abort_mission";
+    default: return "unknown";
+  }
+}
+
+bool parseInt32(const char *text, int32_t *out) {
+  if (!text || !*text) return false;
+  bool negative = false;
+  if (*text == '-') { negative = true; ++text; }
+  else if (*text == '+') { ++text; }
+  if (!*text) return false;
+  int32_t value = 0;
+  for (; *text; ++text) {
+    if (*text < '0' || *text > '9') return false;
+    value = value * 10 + (*text - '0');
+  }
+  *out = negative ? -value : value;
+  return true;
+}
+
+void printCommandStatus(const char *op, uint16_t seq, bool sent) {
+  Serial.print(F("{\"source\":\"ground_station\",\"kind\":\"command\",\"op\":\""));
+  Serial.print(op);
+  Serial.print(F("\",\"cmd_seq\":"));
+  Serial.print(seq);
+  Serial.print(F(",\"status\":\""));
+  Serial.print(sent ? F("sent") : F("failed"));
+  Serial.println(F("\"}"));
+}
+
+void sendCommand(uint8_t opcode, const uint8_t *payload) {
+  const uint16_t seq = commandSequence++;
+  if (!radioReady) {
+    printCommandStatus(opcodeName(opcode), seq, false);
+    return;
+  }
+
+  NanoLinkProtocol::CommandFrame frame{};
+  frame.header.magic = NanoLinkProtocol::MAGIC;
+  frame.header.version = NanoLinkProtocol::VERSION;
+  frame.header.type = NanoLinkProtocol::TYPE_COMMAND;
+  frame.header.sequence = seq;
+  frame.opcode = opcode;
+  memcpy(frame.payload, payload, sizeof(frame.payload));
+
+  radio.stopListening();
+  radio.openWritingPipe(CMD_ADDRESS);
+  radio.setRetries(2, 5);
+  const bool sent = radio.write(&frame, sizeof(frame));
+  radio.setRetries(0, 0);
+  radio.openReadingPipe(1, GCS_ADDRESS);
+  radio.startListening();
+
+  printCommandStatus(opcodeName(opcode), seq, sent);
+}
+
+void handleCommandLine(char *line) {
+  // Expected: CMD,set_home,lat_e7,lon_e7 | CMD,set_waypoint,lat,lon,alt_mm |
+  //           CMD,set_loiter,radius_m | CMD,start_mission | CMD,abort_mission
+  char *fields[6]{};
+  uint8_t count = 0;
+  fields[count++] = line;
+  for (char *p = line; *p && count < 6; ++p) {
+    if (*p == ',') {
+      *p = '\0';
+      fields[count++] = p + 1;
+    }
+  }
+  if (count < 2 || strcmp(fields[0], "CMD") != 0) return;
+
+  uint8_t payload[24]{};
+  const char *op = fields[1];
+  int32_t a = 0, b = 0, c = 0;
+
+  if (strcmp(op, "set_home") == 0 && count >= 4 &&
+      parseInt32(fields[2], &a) && parseInt32(fields[3], &b)) {
+    memcpy(payload + 0, &a, 4);
+    memcpy(payload + 4, &b, 4);
+    sendCommand(NanoLinkProtocol::CMD_SET_HOME, payload);
+  } else if (strcmp(op, "set_waypoint") == 0 && count >= 5 &&
+             parseInt32(fields[2], &a) && parseInt32(fields[3], &b) &&
+             parseInt32(fields[4], &c)) {
+    memcpy(payload + 0, &a, 4);
+    memcpy(payload + 4, &b, 4);
+    memcpy(payload + 8, &c, 4);
+    sendCommand(NanoLinkProtocol::CMD_SET_WAYPOINT, payload);
+  } else if (strcmp(op, "set_loiter") == 0 && count >= 3 &&
+             parseInt32(fields[2], &a)) {
+    memcpy(payload + 0, &a, 2);
+    sendCommand(NanoLinkProtocol::CMD_SET_LOITER, payload);
+  } else if (strcmp(op, "start_mission") == 0) {
+    sendCommand(NanoLinkProtocol::CMD_START_MISSION, payload);
+  } else if (strcmp(op, "abort_mission") == 0) {
+    sendCommand(NanoLinkProtocol::CMD_ABORT_MISSION, payload);
+  }
+}
+
+void pollSerialInput() {
+  while (Serial.available()) {
+    const char c = static_cast<char>(Serial.read());
+    if (c == '\n') {
+      inputLine[inputLength] = '\0';
+      inputLength = 0;
+      handleCommandLine(inputLine);
+    } else if (c != '\r' && inputLength < sizeof(inputLine) - 1) {
+      inputLine[inputLength++] = c;
+    } else if (c != '\r') {
+      inputLength = 0; // line too long: reset and wait for the next one
+    }
+  }
+}
+// -----------------------------------------------------------------------------
 
 void beginOled() {
   Wire.begin(); // F401 I2C1 default: SDA PB7, SCL PB6.
@@ -163,6 +288,7 @@ void printCommon(uint8_t kind, uint16_t sequence) {
   Serial.print(F("{\"source\":\"ground_station\",\"kind\":"));
   if (kind == NanoLinkProtocol::TYPE_SENSORS) Serial.print(F("\"sensor\""));
   else if (kind == NanoLinkProtocol::TYPE_CONTROL) Serial.print(F("\"control\""));
+  else if (kind == NanoLinkProtocol::TYPE_COMMAND_ACK) Serial.print(F("\"command_ack\""));
   else Serial.print(F("\"gps\""));
   Serial.print(F(",\"seq\":")); Serial.print(sequence);
   Serial.print(F(",\"rx_packets\":")); Serial.print(receivedPackets);
@@ -243,6 +369,20 @@ void printGpsFrame(const NanoLinkProtocol::GpsFrame &frame, const uint8_t *raw) 
   Serial.println('}');
 }
 
+void printCommandAckFrame(const NanoLinkProtocol::CommandAckFrame &frame, const uint8_t *raw) {
+  printCommon(NanoLinkProtocol::TYPE_COMMAND_ACK, frame.header.sequence);
+  printHex(raw, 32);
+  Serial.print(F(",\"op\":\""));
+  Serial.print(opcodeName(frame.opcode));
+  Serial.print(F("\",\"cmd_seq\":"));
+  Serial.print(frame.commandSequence);
+  Serial.print(F(",\"result\":"));
+  Serial.print(frame.result);
+  Serial.print(F(",\"mission_state\":"));
+  Serial.print(frame.missionState);
+  Serial.println('}');
+}
+
 void noteSequence(uint16_t sequence) {
   if (haveSequence) {
     const uint16_t delta = static_cast<uint16_t>(sequence - lastSequence);
@@ -302,6 +442,12 @@ void handleRadioPacket() {
       printGpsFrame(frame, raw);
       break;
     }
+    case NanoLinkProtocol::TYPE_COMMAND_ACK: {
+      NanoLinkProtocol::CommandAckFrame frame{};
+      memcpy(&frame, raw, sizeof(frame));
+      printCommandAckFrame(frame, raw);
+      break;
+    }
     default:
       break;
   }
@@ -334,6 +480,7 @@ void setup() {
 }
 
 void loop() {
+  pollSerialInput();
 #if !OLED_DIAGNOSTIC
   if (radioReady) {
     while (radio.available()) handleRadioPacket();
