@@ -11,26 +11,29 @@ to inspect local aircraft sensors without the radio or PWM outputs.
 The handheld Nano sends a 12-byte RC packet containing throttle, aileron,
 elevator, arm state, two auxiliary values, and the throttle-mode switch state.
 The optional A5 auxiliary analog reading occupies the low 10 bits of `pot1`; the
-upper nibble reports the four momentary trim-button states. A4 is the throttle
-boost value. The RF link uses address `NANO1`, channel 90, and 250 kbps.
+upper nibble reports the four momentary trim-button states. Bits 10 and 11 of
+`pot1` carry the two throttle-stick trigger buttons (telemetry-dump request and
+a draft return-to-home request). A4 is the control-authority knob (10%..100%).
+The RF link uses address `NANO1`, channel 90, and 250 kbps, and is
+fire-and-forget (no auto-ACK).
 
 ## Aircraft to ground station
 
 The aircraft controller uses its nRF24 radio for both RC reception and
-telemetry transmission. After receiving a valid RC packet, it briefly
-transmits one telemetry frame to address `PC01A`, then returns to listening for
-RC. Sensor, control/link, and GPS frames are versioned and each fits the nRF24
-32-byte payload limit. The ground station listens on the same RF channel and
-forwards each validated frame as a JSON line at 115200 baud.
+telemetry transmission. It stays in receive mode almost continuously and, every
+3 seconds (or when the transmitter dump trigger is pressed), briefly transmits a
+full snapshot — sensor, control/link, and GPS frames back-to-back — to address
+`PC01A`, then returns to listening. All frames are fire-and-forget; the ground
+station is a pure listener and never acknowledges, so there is no RX/TX
+switching contention. Sensor, control/link, and GPS frames are versioned and
+each fits the nRF24 32-byte payload limit.
 
 Telemetry fields include a sequence number, sensor-valid flags, acceleration,
 angular rate, magnetometer readings, barometric pressure, temperature, and RC
 packet age/counts, transmitter channel values, trim/switch state, and GPS
 position/fix data. Acceleration is reported in mg, gyro rate in
 centidegrees/second, pressure in Pa, and temperature in centidegrees Celsius.
-Magnetometer values are uncalibrated sensor counts. The ground station's nRF24
-hardware automatically acknowledges received telemetry frames; it does not yet
-send application-level control commands.
+Magnetometer values are uncalibrated sensor counts.
 
 ## Desktop monitoring modes
 
@@ -55,29 +58,33 @@ The aircraft implements a self-level mode using a complementary filter (gyro
 integration blended with the accelerometer level reference) and a P(D) angle
 controller on roll and pitch. The transmitter's 3-position switch selects the
 mode: position 0 is manual passthrough, positions 1 and 2 engage self-level.
-The A4 knob on the transmitter sets control authority (25%..100%): in manual
-mode it scales elevon throw, in stabilized mode it scales the commanded bank
-angle. Direction and axis mapping are configured by `ROLL_SIGN`,
-`PITCH_SIGN`, `SWAP_ROLL_PITCH`, and `SWAP_ELEVONS` in the aircraft firmware
-and must be verified on the bench before first flight.
+The A4 knob on the transmitter is a single control-authority limit (10%..100%):
+it scales the elevon throw in manual mode and the correction authority in
+stabilized mode the same way. The level reference and gyro bias are captured by
+the ground-station `CMD_CALIBRATE_LEVEL` command (the app's "Calibrate
+level/gyro" button); the gyro bias is averaged over ~1 s. Direction and axis
+mapping are configured by `ROLL_SIGN`, `PITCH_SIGN`, `SWAP_ROLL_PITCH`, and
+`SWAP_ELEVONS` in the aircraft firmware and must be verified on the bench before
+first flight.
 
 ## Ground-to-aircraft command link
 
 The ground station also forwards mission commands to the aircraft. The computer
 sends plain-text lines over USB serial (`CMD,set_home,lat_e7,lon_e7`,
 `CMD,set_waypoint,lat_e7,lon_e7,alt_mm`, `CMD,set_loiter,radius_m`,
-`CMD,start_mission`, `CMD,abort_mission`); the ground station packs each into a
-32-byte `CommandFrame` and transmits it on a second nRF24 pipe (`CMND1`) that
-the aircraft opens alongside the RC pipe. The aircraft validates each command,
-stores the mission, and immediately transmits a `CommandAckFrame` back, which
-the ground station forwards to the computer as a `command_ack` JSON line.
+`CMD,start_mission`, `CMD,abort_mission`, `CMD,calibrate_level`, `CMD,rth`);
+the ground station packs each into a 32-byte `CommandFrame` and, briefly
+switching from listen to transmit, sends it fire-and-forget on a second nRF24
+pipe (`CMND1`) that the aircraft opens alongside the RC pipe. The aircraft
+validates each command, stores the mission, and immediately transmits a
+`CommandAckFrame` back, which the ground station forwards to the computer as a
+`command_ack` JSON line.
 
-Commands are rate-limited by design: the aircraft's single radio alternates
-briefly between RC listening, telemetry transmission, and command acknowledgment.
-RC always keeps priority; a lost command simply reports `failed` on the ground
-station. In the current stage the aircraft only **stores and acknowledges**
-missions — `start_mission` records a request but does not fly it, because the
-navigation controller is not implemented yet.
+Because the ground station is otherwise a pure listener, the only RX/TX
+switching it ever performs is this short command transmit. In the current stage
+the aircraft only **stores and acknowledges** missions — `start_mission` and
+`rth` record a request but do not fly it, because the navigation controller is
+not implemented yet.
 
 ## Transmitter RC sniffer (bench diagnostic)
 

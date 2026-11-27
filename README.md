@@ -26,8 +26,15 @@ flowchart LR
 The current firmware supports manual RC control with dual-rate throw, elevon
 mixing, a self-level stabilization mode (selected with the transmitter's
 3-position switch), link-loss failsafe, MPU9250/BMP280/GPS data acquisition,
-and nRF24 telemetry. Autonomous navigation and computer-issued flight commands
-are not part of the current release.
+and nRF24 telemetry.
+
+The radio link is **role-based and fire-and-forget**: the transmitter only
+sends, the ground station only listens, and the aircraft stays in receive mode
+almost continuously, sending a full telemetry snapshot (sensor + control + GPS)
+every 3 seconds or when a transmitter trigger button is pressed. Two unused
+throttle-stick trim buttons act as triggers (telemetry dump and a draft
+return-to-home request). Autonomous navigation is not part of the current
+release.
 
 ## Hardware
 
