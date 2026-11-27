@@ -55,7 +55,7 @@ constexpr uint32_t GPS_BAUD = 9600;
 // servo outputs. If the surfaces move the wrong way on the bench, change these
 // rather than rewiring.
 constexpr int16_t ROLL_SIGN = 1;
-constexpr int16_t PITCH_SIGN = -1;
+constexpr int16_t PITCH_SIGN = 1;
 constexpr bool SWAP_ROLL_PITCH = true;   // transmitter gimbal axes are crossed
 constexpr bool SWAP_ELEVONS = false;
 
