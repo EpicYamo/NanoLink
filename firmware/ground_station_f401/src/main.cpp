@@ -237,7 +237,7 @@ void handleRcSniff() {
 void beginOled() {
   if (!wireStarted) {
     Wire.begin(); // F401 I2C1 default: SDA PB7, SCL PB6.
-    Wire.setClock(100000);
+    Wire.setClock(400000);
     wireStarted = true;
   }
 
