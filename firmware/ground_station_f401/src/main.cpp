@@ -571,6 +571,32 @@ void diagDraw(const char *line, bool showCounter) {
   oled.sendBuffer();
 }
 
+// Bit-banged SPI probe: bypasses the SPI peripheral entirely. Pure GPIO
+// (already proven healthy by the GPIO check), so it cannot hang. If the
+// module answers here but hardware SPI doesn't, the SPI peripheral or its
+// driver is the fault; if bit-bang also reads silence, the module is dead.
+uint8_t bitbangSpiProbe() {
+  pinMode(PA5, OUTPUT);          // SCK
+  pinMode(PA6, INPUT);           // MISO
+  pinMode(PA7, OUTPUT);          // MOSI
+  pinMode(PIN_NRF_CSN, OUTPUT);
+  digitalWrite(PA5, LOW);
+  digitalWrite(PIN_NRF_CSN, LOW);
+  delayMicroseconds(5);
+  uint8_t status = 0;
+  for (uint8_t i = 0; i < 8; ++i) {
+    digitalWrite(PA7, HIGH);     // NOP = 0xFF, all bits high
+    delayMicroseconds(5);
+    digitalWrite(PA5, HIGH);
+    delayMicroseconds(5);
+    status = (status << 1) | (digitalRead(PA6) ? 1 : 0);
+    digitalWrite(PA5, LOW);
+    delayMicroseconds(5);
+  }
+  digitalWrite(PIN_NRF_CSN, HIGH);
+  return status;
+}
+
 void radioDiagSetup() {
   // Wait for the USB host so the app can record every stage line.
   diagDraw("0 WAIT USB", false);
@@ -578,16 +604,8 @@ void radioDiagSetup() {
   while (!Serial && millis() - usbWaitStart < 20000) delay(10);
   diagSerial("usb_ready");
 
-  diagDraw("1 SPI BEGIN", false);
-  diagSerial("spi_begin");
-  SPI.begin();
-  diagSerial("spi_begin_done");
-
-  // GPIO self-test before any SPI transaction: drive each radio pin LOW/HIGH
-  // and read the actual pin level back. A pin that cannot hold its level is
-  // shorted to a rail, bridged to another line, or damaged — SPI is never
-  // attempted into a faulty bus.
-  diagDraw("2 GPIO CHECK", false);
+  // GPIO self-test first — before SPI touches any pin mode.
+  diagDraw("1 GPIO CHECK", false);
   diagSerial("gpio_check");
   {
     struct DiagPinDef { uint32_t arduinoPin; GPIO_TypeDef *port; uint32_t mask; const char *name; };
@@ -617,23 +635,32 @@ void radioDiagSetup() {
       Serial.print(F(",\"ok\":")); printBool(ok);
       Serial.println('}');
     }
-    // Safe idle levels before SPI takes the pins over.
-    digitalWrite(PIN_NRF_CE, LOW);
-    digitalWrite(PIN_NRF_CSN, HIGH);
-    digitalWrite(PA5, LOW);
-    digitalWrite(PA7, LOW);
-    pinMode(PA6, INPUT);
     if (gpioFaults) {
       diagSerial("gpio_fault");
-      diagDraw("2 PIN FAULT", false);
+      diagDraw("1 PIN FAULT", false);
       diagHalted = true;
       return;
     }
     diagSerial("gpio_ok");
   }
 
+  // Bit-bang probe — no SPI peripheral involvement, cannot hang.
+  diagDraw("2 BITBANG", false);
+  diagSerial("bitbang_probe");
+  const uint8_t bitbangStatus = bitbangSpiProbe();
+  Serial.print(F("{\"source\":\"ground_station\",\"kind\":\"radio_test\",\"stage\":\"bitbang_status\",\"status\":"));
+  Serial.print(bitbangStatus);
+  Serial.println('}');
+  delay(500);
+
+  // Hardware SPI from here on.
+  diagDraw("3 SPI BEGIN", false);
+  diagSerial("spi_begin");
+  SPI.begin();
+  diagSerial("spi_begin_done");
+
   // Raw SPI probe, independent of the RF24 library: NOP returns STATUS.
-  diagDraw("3 SPI PROBE", false);
+  diagDraw("4 SPI PROBE", false);
   diagSerial("spi_probe");
   SPI.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));
   pinMode(PIN_NRF_CSN, OUTPUT);
@@ -646,11 +673,11 @@ void radioDiagSetup() {
   Serial.println('}');
   delay(500);
 
-  diagDraw("3 RF24 BEGIN", false);
+  diagDraw("5 RF24 BEGIN", false);
   diagSerial("rf24_begin");
   diagBeginOk = radio.begin();
   diagSerial(diagBeginOk ? "rf24_begin_ok" : "rf24_begin_fail");
-  diagDraw(diagBeginOk ? "5 BEGIN OK" : "5 BEGIN FAIL", false);
+  diagDraw(diagBeginOk ? "6 BEGIN OK" : "6 BEGIN FAIL", false);
   if (!diagBeginOk) return;
   delay(600);
   diagChipOk = radio.isChipConnected();
@@ -662,7 +689,7 @@ void radioDiagSetup() {
   radio.setRetries(0, 0);
   radioStartListening();  // opens both pipes exactly like the normal build
   diagSerial("listening");
-  diagDraw("6 LISTENING", false);
+  diagDraw("7 LISTENING", false);
 }
 
 void radioDiagLoop() {
@@ -674,7 +701,7 @@ void radioDiagLoop() {
   }
   if (millis() - diagLastDrawMs >= 100) {
     diagLastDrawMs = millis();
-    diagDraw(diagRxOn ? "8 RX LOOP" : "7 WAIT 10s", true);
+    diagDraw(diagRxOn ? "9 RX LOOP" : "8 WAIT 10s", true);
   }
   if (millis() - diagLastStatusMs >= 1000) {
     diagLastStatusMs = millis();

@@ -674,12 +674,7 @@ void aircraftRadioDiagSetup() {
   while (!Serial && millis() - usbWaitStart < 20000) delay(10);
   diagSerial("usb_ready");
 
-  diagSerial("spi_begin");
-  SPI.begin();
-  diagSerial("spi_begin_done");
-
-  // GPIO self-test before any SPI transaction: drive each radio pin LOW/HIGH
-  // and read the actual pin level back; report shorts or damaged pins.
+  // GPIO self-test first — before SPI touches any pin mode.
   diagSerial("gpio_check");
   {
     struct DiagPinDef { uint32_t arduinoPin; GPIO_TypeDef *port; uint32_t mask; const char *name; };
@@ -709,11 +704,6 @@ void aircraftRadioDiagSetup() {
       Serial.print(F(",\"ok\":")); Serial.print(ok ? F("true") : F("false"));
       Serial.println('}');
     }
-    digitalWrite(PIN_NRF_CE, LOW);
-    digitalWrite(PIN_NRF_CSN, HIGH);
-    digitalWrite(PA5, LOW);
-    digitalWrite(PA7, LOW);
-    pinMode(PA6, INPUT);
     if (gpioFaults) {
       diagSerial("gpio_fault");
       diagHalted = true;
@@ -721,6 +711,37 @@ void aircraftRadioDiagSetup() {
     }
     diagSerial("gpio_ok");
   }
+
+  // Bit-bang probe — bypasses the SPI peripheral, cannot hang.
+  diagSerial("bitbang_probe");
+  {
+    pinMode(PA5, OUTPUT);
+    pinMode(PA6, INPUT);
+    pinMode(PA7, OUTPUT);
+    pinMode(PIN_NRF_CSN, OUTPUT);
+    digitalWrite(PA5, LOW);
+    digitalWrite(PIN_NRF_CSN, LOW);
+    delayMicroseconds(5);
+    uint8_t status = 0;
+    for (uint8_t i = 0; i < 8; ++i) {
+      digitalWrite(PA7, HIGH);
+      delayMicroseconds(5);
+      digitalWrite(PA5, HIGH);
+      delayMicroseconds(5);
+      status = (status << 1) | (digitalRead(PA6) ? 1 : 0);
+      digitalWrite(PA5, LOW);
+      delayMicroseconds(5);
+    }
+    digitalWrite(PIN_NRF_CSN, HIGH);
+    Serial.print(F("{\"source\":\"aircraft_usb\",\"kind\":\"radio_test\",\"stage\":\"bitbang_status\",\"status\":"));
+    Serial.print(status);
+    Serial.println('}');
+  }
+  delay(500);
+
+  diagSerial("spi_begin");
+  SPI.begin();
+  diagSerial("spi_begin_done");
 
   diagSerial("spi_probe");
   SPI.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));
