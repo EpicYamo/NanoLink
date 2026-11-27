@@ -55,15 +55,19 @@ constexpr uint32_t GPS_BAUD = 9600;
 // servo outputs. If the surfaces move the wrong way on the bench, change these
 // rather than rewiring.
 constexpr int16_t ROLL_SIGN = 1;
-constexpr int16_t PITCH_SIGN = 1;
+constexpr int16_t PITCH_SIGN = -1;
 constexpr bool SWAP_ROLL_PITCH = true;   // transmitter gimbal axes are crossed
 constexpr bool SWAP_ELEVONS = false;
 
 // --- stage B stabilization -------------------------------------------------
 constexpr float MAX_BANK_DEG = 45.0f;   // max commanded roll angle
 constexpr float MAX_PITCH_DEG = 30.0f;  // max commanded pitch angle
-constexpr float ANGLE_KP = 3.0f;        // us of servo per degree of angle error
-constexpr float RATE_KD = 0.15f;        // us of servo per deg/s of rotation
+constexpr float ANGLE_KP = 6.0f;        // us of servo per degree of angle error
+constexpr float RATE_KD = 0.25f;        // us of servo per deg/s of rotation
+// Flip these if the aircraft oscillates in self-level mode: a wrong rate sign
+// turns the gyro damping term into positive feedback.
+constexpr float ROLL_RATE_SIGN = 1.0f;
+constexpr float PITCH_RATE_SIGN = 1.0f;
 
 const uint8_t RC_ADDRESS[6] = "NANO1";
 const uint8_t GCS_ADDRESS[6] = "PC01A";
@@ -133,6 +137,7 @@ uint8_t i2cAddresses[16]{};
 uint8_t i2cAddressCount = 0;
 bool haveRcPacket = false;
 bool haveImuSample = false;
+bool imuSampleFresh = false;
 bool haveMagSample = false;
 bool haveBaroSample = false;
 float attitudeRollDeg = 0.0f;
@@ -239,8 +244,8 @@ void applyControl(bool linkOk) {
     const float pitchErr = targetPitch - attitudePitchDeg;
     const float gyroRoll = sensorData.gyroCentiDps[0] / 100.0f;   // deg/s
     const float gyroPitch = sensorData.gyroCentiDps[1] / 100.0f;  // deg/s
-    rollCmd = static_cast<int32_t>(ANGLE_KP * rollErr - RATE_KD * gyroRoll);
-    pitchCmd = static_cast<int32_t>(ANGLE_KP * pitchErr - RATE_KD * gyroPitch);
+    rollCmd = static_cast<int32_t>(ANGLE_KP * rollErr - RATE_KD * ROLL_RATE_SIGN * gyroRoll);
+    pitchCmd = static_cast<int32_t>(ANGLE_KP * pitchErr - RATE_KD * PITCH_RATE_SIGN * gyroPitch);
   }
 
   // Standard elevon mix: pitch is common mode, roll is differential.
@@ -350,6 +355,7 @@ void sampleSensors() {
     sensorData.gyroCentiDps[1] = clampToInt16(imu->gyroY() * 100.0f);
     sensorData.gyroCentiDps[2] = clampToInt16(imu->gyroZ() * 100.0f);
     haveImuSample = true;
+    imuSampleFresh = true;
     if (imuHasMagnetometer && imu->magUpdate() == 0) {
       sensorData.magCounts[0] = imu->magX();
       sensorData.magCounts[1] = imu->magY();
@@ -373,8 +379,15 @@ void sampleSensors() {
 // Complementary-filter attitude estimate (roll/pitch only; yaw comes from GPS
 // course later). The accelerometer is the long-term level reference and the
 // gyro provides the short-term rate.
+//
+// NOTE: this runs once per fresh IMU sample (~20 ms), not every loop pass.
+// Integrating the same stale gyro reading at the 1 kHz loop rate would corrupt
+// the filter's time constant and make the attitude estimate (and therefore the
+// self-level servos) jitter.
 void updateAttitude() {
-  if (!haveImuSample) return;
+  if (!imuSampleFresh) return;
+  imuSampleFresh = false;
+
   const float ax = sensorData.accelMg[0] / 1000.0f;
   const float ay = sensorData.accelMg[1] / 1000.0f;
   const float az = sensorData.accelMg[2] / 1000.0f;
@@ -976,7 +989,6 @@ void loop() {
     if (!barometerReady) initBarometer();
   }
 
-  bool receivedPacket = false;
   if (radioReady) {
     uint8_t pipe = 0;
     while (radio.available(&pipe)) {
@@ -995,7 +1007,6 @@ void loop() {
         lastRcPacketMs = millis();
         haveRcPacket = true;
         ++rcPacketCount;
-        receivedPacket = true;
       }
     }
   }
@@ -1010,7 +1021,7 @@ void loop() {
 #else
   applyControl(linkOk);
   updateLed(linkOk);
-  if (radioReady && receivedPacket && millis() - lastRadioTelemetryMs >= RADIO_TELEMETRY_PERIOD_MS) {
+  if (radioReady && millis() - lastRadioTelemetryMs >= RADIO_TELEMETRY_PERIOD_MS) {
     sendRadioTelemetry(linkOk);
     lastRadioTelemetryMs = millis();
   }
