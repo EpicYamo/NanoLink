@@ -108,6 +108,8 @@ class TransmitterView(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self.rc: dict = {}
+        self.aileron_center = 1500
+        self.elevator_center = 1500
         self.setMinimumSize(500, 350)
 
     @staticmethod
@@ -146,11 +148,10 @@ class TransmitterView(QWidget):
 
         # Transmitter: aileron LOW (1309) = stick RIGHT, HIGH (1850) = LEFT.
         # Elevator: LOW (1248) = stick UP, HIGH (1850) = DOWN.
-        # Travel range is 1150-1850 (span 350). Center offset from trim is
-        # intentional: the dot shows exactly what the aircraft receives.
+        # Centers auto-calibrate to the trim-adjusted neutral on first packet.
         ty = cy + int((1.0 - max(0.0, min(1.0, (throttle - 1000) / 1000))) * radius - radius)
-        px = rx - int(max(-1.0, min(1.0, (roll - 1500) / 350.0)) * radius)
-        py = cy + int(max(-1.0, min(1.0, (pitch - 1500) / 350.0)) * radius)
+        px = rx - int(max(-1.0, min(1.0, (roll - self.aileron_center) / 350.0)) * radius)
+        py = cy + int(max(-1.0, min(1.0, (pitch - self.elevator_center) / 350.0)) * radius)
         for x, y in ((lx, ty), (px, py)):
             painter.setPen(QPen(QColor("#f5c451"), 2))
             painter.setBrush(QColor("#f5c451"))
@@ -224,6 +225,7 @@ class MainWindow(QMainWindow):
         self.baro = BaroTracker()
         self.baro_calibrated = False
         self.mission = MissionPlan()
+        self.stick_center_calibrated = False
         self.port: serial.Serial | None = None
         self.rx_buffer = bytearray()
         self.event_count = 0
@@ -660,6 +662,22 @@ class MainWindow(QMainWindow):
         self._update_channel_table(self.store.rc if self.store.rc else self.store.rc_sniff)
         self._update_gps_panel()
         self._update_map_from_telemetry()
+
+        # Auto-calibrate stick centers on the first RC sniff packet
+        # (sticks should be at rest when the ground station connects).
+        if not self.stick_center_calibrated and self.store.rc_sniff:
+            self.transmitter_view.aileron_center = int(
+                self.store.rc_sniff.get("aileron_us", 1500) or 1500
+            )
+            self.transmitter_view.elevator_center = int(
+                self.store.rc_sniff.get("elevator_us", 1500) or 1500
+            )
+            self.stick_center_calibrated = True
+            self.statusBar().showMessage(
+                f"Stick centers calibrated: A={self.transmitter_view.aileron_center}, "
+                f"E={self.transmitter_view.elevator_center} (trim-aware)"
+            )
+
         self._refresh_command_status()
         self._refresh_health()
 
