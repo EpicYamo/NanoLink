@@ -661,6 +661,7 @@ uint32_t diagLastStatusMs = 0;
 uint32_t diagRcCount = 0;
 bool diagBeginOk = false;
 bool diagRxOn = false;
+bool diagHalted = false;
 
 void diagSerial(const char *stage) {
   Serial.print(F("{\"source\":\"aircraft_usb\",\"kind\":\"radio_test\",\"stage\":\""));
@@ -676,6 +677,50 @@ void aircraftRadioDiagSetup() {
   diagSerial("spi_begin");
   SPI.begin();
   diagSerial("spi_begin_done");
+
+  // GPIO self-test before any SPI transaction: drive each radio pin LOW/HIGH
+  // and read the actual pin level back; report shorts or damaged pins.
+  diagSerial("gpio_check");
+  {
+    struct DiagPinDef { uint32_t arduinoPin; GPIO_TypeDef *port; uint32_t mask; const char *name; };
+    const DiagPinDef pins[] = {
+      { PIN_NRF_CE,  GPIOB, 1u << 0, "CE" },
+      { PIN_NRF_CSN, GPIOA, 1u << 4, "CSN" },
+      { PA5, GPIOA, 1u << 5, "SCK" },
+      { PA6, GPIOA, 1u << 6, "MISO" },
+      { PA7, GPIOA, 1u << 7, "MOSI" },
+    };
+    uint8_t gpioFaults = 0;
+    for (uint8_t i = 0; i < 5; ++i) {
+      const DiagPinDef &p = pins[i];
+      pinMode(p.arduinoPin, OUTPUT);
+      digitalWrite(p.arduinoPin, LOW);
+      delay(2);
+      const bool readLow = (p.port->IDR & p.mask) != 0;
+      digitalWrite(p.arduinoPin, HIGH);
+      delay(2);
+      const bool readHigh = (p.port->IDR & p.mask) != 0;
+      const bool ok = !readLow && readHigh;
+      if (!ok) ++gpioFaults;
+      Serial.print(F("{\"source\":\"aircraft_usb\",\"kind\":\"radio_test\",\"stage\":\"gpio_pin\",\"pin\":\""));
+      Serial.print(p.name);
+      Serial.print(F("\",\"low_read\":")); Serial.print(readLow ? F("true") : F("false"));
+      Serial.print(F(",\"high_read\":")); Serial.print(readHigh ? F("true") : F("false"));
+      Serial.print(F(",\"ok\":")); Serial.print(ok ? F("true") : F("false"));
+      Serial.println('}');
+    }
+    digitalWrite(PIN_NRF_CE, LOW);
+    digitalWrite(PIN_NRF_CSN, HIGH);
+    digitalWrite(PA5, LOW);
+    digitalWrite(PA7, LOW);
+    pinMode(PA6, INPUT);
+    if (gpioFaults) {
+      diagSerial("gpio_fault");
+      diagHalted = true;
+      return;
+    }
+    diagSerial("gpio_ok");
+  }
 
   diagSerial("spi_probe");
   SPI.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));
@@ -699,6 +744,7 @@ void aircraftRadioDiagSetup() {
 }
 
 void aircraftRadioDiagLoop() {
+  if (diagHalted) return;
   ++diagCounter;
   if (!diagRxOn && millis() >= 10000) {
     diagRxOn = true;

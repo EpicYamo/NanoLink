@@ -544,6 +544,7 @@ uint32_t diagLastStatusMs = 0;
 bool diagBeginOk = false;
 bool diagChipOk = false;
 bool diagRxOn = false;
+bool diagHalted = false;
 
 void diagSerial(const char *stage) {
   Serial.print(F("{\"source\":\"ground_station\",\"kind\":\"radio_test\",\"stage\":\""));
@@ -582,8 +583,57 @@ void radioDiagSetup() {
   SPI.begin();
   diagSerial("spi_begin_done");
 
+  // GPIO self-test before any SPI transaction: drive each radio pin LOW/HIGH
+  // and read the actual pin level back. A pin that cannot hold its level is
+  // shorted to a rail, bridged to another line, or damaged — SPI is never
+  // attempted into a faulty bus.
+  diagDraw("2 GPIO CHECK", false);
+  diagSerial("gpio_check");
+  {
+    struct DiagPinDef { uint32_t arduinoPin; GPIO_TypeDef *port; uint32_t mask; const char *name; };
+    const DiagPinDef pins[] = {
+      { PIN_NRF_CE,  GPIOB, 1u << 0, "CE" },
+      { PIN_NRF_CSN, GPIOA, 1u << 4, "CSN" },
+      { PA5, GPIOA, 1u << 5, "SCK" },
+      { PA6, GPIOA, 1u << 6, "MISO" },
+      { PA7, GPIOA, 1u << 7, "MOSI" },
+    };
+    uint8_t gpioFaults = 0;
+    for (uint8_t i = 0; i < 5; ++i) {
+      const DiagPinDef &p = pins[i];
+      pinMode(p.arduinoPin, OUTPUT);
+      digitalWrite(p.arduinoPin, LOW);
+      delay(2);
+      const bool readLow = (p.port->IDR & p.mask) != 0;
+      digitalWrite(p.arduinoPin, HIGH);
+      delay(2);
+      const bool readHigh = (p.port->IDR & p.mask) != 0;
+      const bool ok = !readLow && readHigh;
+      if (!ok) ++gpioFaults;
+      Serial.print(F("{\"source\":\"ground_station\",\"kind\":\"radio_test\",\"stage\":\"gpio_pin\",\"pin\":\""));
+      Serial.print(p.name);
+      Serial.print(F("\",\"low_read\":")); printBool(readLow);
+      Serial.print(F(",\"high_read\":")); printBool(readHigh);
+      Serial.print(F(",\"ok\":")); printBool(ok);
+      Serial.println('}');
+    }
+    // Safe idle levels before SPI takes the pins over.
+    digitalWrite(PIN_NRF_CE, LOW);
+    digitalWrite(PIN_NRF_CSN, HIGH);
+    digitalWrite(PA5, LOW);
+    digitalWrite(PA7, LOW);
+    pinMode(PA6, INPUT);
+    if (gpioFaults) {
+      diagSerial("gpio_fault");
+      diagDraw("2 PIN FAULT", false);
+      diagHalted = true;
+      return;
+    }
+    diagSerial("gpio_ok");
+  }
+
   // Raw SPI probe, independent of the RF24 library: NOP returns STATUS.
-  diagDraw("2 SPI PROBE", false);
+  diagDraw("3 SPI PROBE", false);
   diagSerial("spi_probe");
   SPI.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));
   pinMode(PIN_NRF_CSN, OUTPUT);
@@ -600,7 +650,7 @@ void radioDiagSetup() {
   diagSerial("rf24_begin");
   diagBeginOk = radio.begin();
   diagSerial(diagBeginOk ? "rf24_begin_ok" : "rf24_begin_fail");
-  diagDraw(diagBeginOk ? "4 BEGIN OK" : "4 BEGIN FAIL", false);
+  diagDraw(diagBeginOk ? "5 BEGIN OK" : "5 BEGIN FAIL", false);
   if (!diagBeginOk) return;
   delay(600);
   diagChipOk = radio.isChipConnected();
@@ -612,10 +662,11 @@ void radioDiagSetup() {
   radio.setRetries(0, 0);
   radioStartListening();  // opens both pipes exactly like the normal build
   diagSerial("listening");
-  diagDraw("5 LISTENING", false);
+  diagDraw("6 LISTENING", false);
 }
 
 void radioDiagLoop() {
+  if (diagHalted) return;  // keep the PIN FAULT screen visible
   ++diagCounter;
   if (!diagRxOn && millis() >= 10000) {
     diagRxOn = true;
@@ -623,7 +674,7 @@ void radioDiagLoop() {
   }
   if (millis() - diagLastDrawMs >= 100) {
     diagLastDrawMs = millis();
-    diagDraw(diagRxOn ? "7 RX LOOP" : "6 WAIT 10s", true);
+    diagDraw(diagRxOn ? "8 RX LOOP" : "7 WAIT 10s", true);
   }
   if (millis() - diagLastStatusMs >= 1000) {
     diagLastStatusMs = millis();
