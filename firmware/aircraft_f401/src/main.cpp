@@ -587,7 +587,7 @@ void radioConfigureReceiver() {
   radio.setChannel(RF_CHANNEL);
   radio.setDataRate(RF24_250KBPS);
   radio.setPALevel(RF24_PA_LOW);
-  radio.setAutoAck(true);  // ACK the RC link; telemetry itself is fire-and-forget
+  radio.setAutoAck(false);  // no auto-ACK: telemetry is multicast, RC is fire-and-forget
   radio.startListening();
 }
 
@@ -824,6 +824,12 @@ void printUsbDiagnostic(bool nrfChipOk) {
   Serial.print(F(",\"alt_mm\":")); Serial.print(gps.altitudeMm);
   Serial.print(F(",\"speed_cms\":")); Serial.print(gps.speedCms);
   Serial.print(F(",\"course_centi_deg\":")); Serial.print(gps.courseCentiDeg);
+  Serial.print(F("},\"attitude\":{\"roll_deg\":"));
+  Serial.print(attitudeRollDeg);
+  Serial.print(F(",\"pitch_deg\":"));
+  Serial.print(attitudePitchDeg);
+  Serial.print(F(",\"calibrated\":"));
+  printJsonBool(attitudeReady);
   Serial.println(F("}}"));
 }
 #endif

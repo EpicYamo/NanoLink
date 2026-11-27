@@ -225,7 +225,7 @@ void setup() {
     radio.setDataRate(RF24_250KBPS);
     radio.setPALevel(RF24_PA_MAX);
     radio.setAutoAck(true);
-    radio.setRetries(5, 15);
+    radio.setRetries(0, 0);
     radio.stopListening();
   }
 }
