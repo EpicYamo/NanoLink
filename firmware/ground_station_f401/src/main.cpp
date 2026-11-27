@@ -10,6 +10,9 @@
 #ifndef OLED_DIAGNOSTIC
 #define OLED_DIAGNOSTIC 0
 #endif
+#ifndef RADIO_DIAGNOSTIC
+#define RADIO_DIAGNOSTIC 0
+#endif
 
 namespace {
 
@@ -528,12 +531,101 @@ void handleRadioPacket() {
 
 } // namespace
 
+// --- radio diagnostic build --------------------------------------------------
+// Stage-by-stage OLED/serial markers that pinpoint exactly where the normal
+// build freezes on a board. The receive loop is enabled only after 10 seconds
+// so a frozen counter cleanly separates "init hang" from "receive-loop spin".
+#if RADIO_DIAGNOSTIC
+uint32_t diagCounter = 0;
+uint32_t diagLastDrawMs = 0;
+uint32_t diagLastStatusMs = 0;
+bool diagBeginOk = false;
+bool diagChipOk = false;
+bool diagRxOn = false;
+
+void diagSerial(const char *stage) {
+  Serial.print(F("{\"source\":\"ground_station\",\"kind\":\"radio_test\",\"stage\":\""));
+  Serial.print(stage);
+  Serial.println(F("\"}"));
+}
+
+void diagDraw(const char *line, bool showCounter) {
+  if (!oledReady) return;
+  oled.clearBuffer();
+  oled.setFont(u8g2_font_6x10_tf);
+  oled.drawStr(0, 14, "RADIO DIAG");
+  oled.drawStr(0, 36, line);
+  if (showCounter) {
+    oled.setCursor(0, 58);
+    oled.print(F("LOOP "));
+    oled.print(diagCounter);
+    if (diagRxOn) oled.print(F(" RX ON"));
+    if (sniffPackets) {
+      oled.print(F(" S"));
+      oled.print(sniffPackets);
+    }
+  }
+  oled.sendBuffer();
+}
+
+void radioDiagSetup() {
+  diagDraw("1 pre-begin", false);
+  diagSerial("pre_begin");
+  diagBeginOk = radio.begin();
+  diagSerial(diagBeginOk ? "begin_ok" : "begin_fail");
+  diagDraw(diagBeginOk ? "2 BEGIN OK" : "2 BEGIN FAIL", false);
+  if (!diagBeginOk) return;
+  delay(600);
+  diagChipOk = radio.isChipConnected();
+  diagSerial(diagChipOk ? "chip_ok" : "chip_fail");
+  radio.setChannel(RF_CHANNEL);
+  radio.setDataRate(RF24_250KBPS);
+  radio.setPALevel(RF24_PA_MIN);
+  radio.setAutoAck(true);
+  radio.setRetries(0, 0);
+  radioStartListening();  // opens both pipes exactly like the normal build
+  diagSerial("listening");
+  diagDraw("4 LISTENING", false);
+}
+
+void radioDiagLoop() {
+  ++diagCounter;
+  if (!diagRxOn && millis() >= 10000) {
+    diagRxOn = true;
+    diagSerial("rx_on");
+  }
+  if (millis() - diagLastDrawMs >= 100) {
+    diagLastDrawMs = millis();
+    diagDraw(diagRxOn ? "5 RX LOOP" : "3 WAIT 10s", true);
+  }
+  if (millis() - diagLastStatusMs >= 1000) {
+    diagLastStatusMs = millis();
+    Serial.print(F("{\"source\":\"ground_station\",\"kind\":\"radio_test\",\"stage\":\"running\",\"counter\":"));
+    Serial.print(diagCounter);
+    Serial.print(F(",\"rx_on\":")); printBool(diagRxOn);
+    Serial.print(F(",\"sniff\":")); Serial.print(sniffPackets);
+    Serial.println('}');
+  }
+  if (diagRxOn && diagBeginOk) {
+    uint8_t pipe = 0;
+    while (radio.available(&pipe)) {
+      if (pipe == 0) handleRcSniff();
+      else handleRadioPacket();
+    }
+  }
+}
+#endif
+// -----------------------------------------------------------------------------
+
 void setup() {
   Serial.begin(115200);
   const uint32_t serialWaitStart = millis();
   while (!Serial && millis() - serialWaitStart < 1500) delay(10);
 
   beginOled();
+#if RADIO_DIAGNOSTIC
+  radioDiagSetup();
+#else
   renderBootScreen();
   emitStatus(); // Publish USB/OLED health even if radio initialization fails.
 #if !OLED_DIAGNOSTIC
@@ -549,10 +641,15 @@ void setup() {
   }
 #endif
   emitStatus();
+#endif
 }
 
 void loop() {
   pollSerialInput();
+#if RADIO_DIAGNOSTIC
+  radioDiagLoop();
+  return;
+#endif
 #if !OLED_DIAGNOSTIC
   if (radioReady) {
     uint8_t pipe = 0;
