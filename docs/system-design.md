@@ -43,6 +43,13 @@ send application-level control commands.
 
 The monitor is read-only; it does not issue aircraft commands.
 
+The desktop app also includes a map and mission planner: the first GPS fix sets
+home, a map click places a waypoint with a target altitude, and the planned
+sequence (waypoint, return home, loiter circle) is displayed with distances and
+bearings. This is a planning/visualization feature only — executing a mission
+requires aircraft stabilization and a command uplink, which are future firmware
+stages.
+
 ## Control surfaces and failsafe
 
 The aircraft controller mixes the transmitter's roll and pitch channels into

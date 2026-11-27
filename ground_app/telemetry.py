@@ -8,6 +8,28 @@ import time
 from typing import Any
 
 
+class BaroTracker:
+    """Display-only barometric altitude with a calibratable baseline pressure."""
+
+    STANDARD_SEA_LEVEL_PA = 101325.0
+    EXPONENT = 1.0 / 5.255
+
+    def __init__(self) -> None:
+        self.baseline_pa: float = self.STANDARD_SEA_LEVEL_PA
+        self.calibrated: bool = False
+
+    def calibrate(self, pressure_pa: float) -> None:
+        if pressure_pa and pressure_pa > 30000.0:
+            self.baseline_pa = float(pressure_pa)
+            self.calibrated = True
+
+    def altitude_m(self, pressure_pa: float) -> float:
+        if not pressure_pa or pressure_pa <= 0.0:
+            return 0.0
+        ratio = float(pressure_pa) / self.baseline_pa
+        return 44330.0 * (1.0 - ratio ** self.EXPONENT)
+
+
 class TelemetryStore:
     def __init__(self) -> None:
         self.reset()

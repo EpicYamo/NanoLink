@@ -61,7 +61,31 @@ address but the panel stays blank, check the panel resolution/controller variant
 
 The attitude display begins with a short stationary gyro/level calibration.
 Keep the aircraft level and still while the counter runs; use **Calibrate level /
-gyro** to repeat the process after moving or remounting the sensor.
+gyro** to repeat the process after moving or remounting the sensor. The same
+command also captures the current barometer pressure as the zero-altitude
+baseline; relative barometric altitude is shown next to GPS altitude in the
+Overview panel and in the BMP280 status tile. The first valid pressure sample of
+a session captures the baseline automatically.
+
+## Map and mission planning
+
+The **Map / Mission** tab shows the aircraft's live GPS position on an
+OpenStreetMap tile map, its track history, home position, and the planned
+mission:
+
+- The first GPS fix of a session sets **home** automatically; you can also set
+  it manually from the aircraft fix.
+- **Click the map** to place a waypoint at the selected target altitude.
+- The loiter circle around home shows where the aircraft would circle after
+  returning.
+
+The mission model (fly to the waypoint at altitude, return home, loiter)
+is planned and visualized only. **The aircraft cannot execute it yet**: the
+flight controller has no stabilization mode and no computer-to-aircraft
+command uplink. Flying the mission requires those firmware stages first.
+
+Map tiles are downloaded from OpenStreetMap and cached on disk, so the map needs
+internet access on first view; overlays still work offline.
 
 ## Install and run
 

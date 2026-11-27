@@ -28,7 +28,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from telemetry import AttitudeEstimator, TelemetryStore
+from telemetry import AttitudeEstimator, BaroTracker, TelemetryStore
+from mapview import TileMapWidget
+from mission import MissionPlan
 
 
 class StatusTile(QFrame):
@@ -214,6 +216,9 @@ class MainWindow(QMainWindow):
         self.resize(1200, 850)
         self.store = TelemetryStore()
         self.attitude = AttitudeEstimator()
+        self.baro = BaroTracker()
+        self.baro_calibrated = False
+        self.mission = MissionPlan()
         self.port: serial.Serial | None = None
         self.rx_buffer = bytearray()
         self.event_count = 0
@@ -228,6 +233,7 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.tabs.addTab(self._make_overview_tab(), "Overview")
         self.tabs.addTab(self._make_controls_tab(), "Transmitter")
+        self.tabs.addTab(self._make_map_tab(), "Map / Mission")
         self.tabs.addTab(self._make_packets_tab(), "Packets")
         root_layout.addWidget(self.tabs, 1)
         self.statusBar().showMessage("Choose a source mode and USB serial port")
@@ -330,6 +336,118 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.channel_table, 1)
         return page
 
+    def _make_map_tab(self) -> QWidget:
+        from PySide6.QtWidgets import QCheckBox, QDoubleSpinBox, QSpinBox
+
+        page = QWidget()
+        layout = QHBoxLayout(page)
+        self.map_widget = TileMapWidget()
+        self.map_widget.map_clicked.connect(self._map_clicked)
+        layout.addWidget(self.map_widget, 3)
+
+        side = QWidget()
+        side_layout = QVBoxLayout(side)
+        side_layout.setContentsMargins(8, 0, 0, 0)
+
+        title = QLabel("Mission planner")
+        title.setObjectName("tileValue")
+        side_layout.addWidget(title)
+
+        warning = QLabel(
+            "PLANNING ONLY — the aircraft cannot fly this mission yet. "
+            "Stabilization and a computer→aircraft command link are not implemented."
+        )
+        warning.setWordWrap(True)
+        warning.setStyleSheet("color: #e2aa57;")
+        side_layout.addWidget(warning)
+
+        self.follow_checkbox = QCheckBox("Center map on aircraft fix")
+        self.follow_checkbox.setChecked(True)
+        self.follow_checkbox.toggled.connect(self._follow_toggled)
+        side_layout.addWidget(self.follow_checkbox)
+
+        side_layout.addWidget(QLabel("Waypoint altitude (m)"))
+        self.waypoint_alt_spin = QSpinBox()
+        self.waypoint_alt_spin.setRange(5, 500)
+        self.waypoint_alt_spin.setValue(50)
+        side_layout.addWidget(self.waypoint_alt_spin)
+
+        side_layout.addWidget(QLabel("Loiter radius around home (m)"))
+        self.loiter_radius_spin = QSpinBox()
+        self.loiter_radius_spin.setRange(5, 500)
+        self.loiter_radius_spin.setValue(30)
+        self.loiter_radius_spin.valueChanged.connect(self._loiter_radius_changed)
+        side_layout.addWidget(self.loiter_radius_spin)
+
+        home_button = QPushButton("Set home from aircraft fix")
+        home_button.clicked.connect(lambda _checked=False: self._set_home_from_fix())
+        side_layout.addWidget(home_button)
+
+        clear_button = QPushButton("Clear waypoint")
+        clear_button.clicked.connect(lambda _checked=False: self._clear_waypoint())
+        side_layout.addWidget(clear_button)
+
+        zoom_row = QHBoxLayout()
+        zoom_in_button = QPushButton("Zoom +")
+        zoom_in_button.clicked.connect(lambda _checked=False: self.map_widget.zoom_in())
+        zoom_out_button = QPushButton("Zoom −")
+        zoom_out_button.clicked.connect(lambda _checked=False: self.map_widget.zoom_out())
+        zoom_row.addWidget(zoom_in_button)
+        zoom_row.addWidget(zoom_out_button)
+        side_layout.addLayout(zoom_row)
+
+        self.mission_summary = QLabel("Click the map to place the waypoint.")
+        self.mission_summary.setWordWrap(True)
+        self.mission_summary.setObjectName("infoPanel")
+        self.mission_summary.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        side_layout.addWidget(self.mission_summary, 1)
+
+        layout.addWidget(side, 1)
+        return page
+
+    def _map_clicked(self, lat: float, lon: float) -> None:
+        try:
+            self.mission.set_waypoint(lat, lon, self.waypoint_alt_spin.value())
+        except ValueError:
+            return
+        self.map_widget.set_waypoint(lat, lon, self.waypoint_alt_spin.value())
+        self._refresh_mission_summary()
+        self.statusBar().showMessage(f"Waypoint set at {lat:.6f}, {lon:.6f}")
+
+    def _follow_toggled(self, checked: bool) -> None:
+        self.map_widget.follow = checked
+
+    def _loiter_radius_changed(self, value: int) -> None:
+        self.mission.loiter_radius_m = float(value)
+        self.map_widget.set_loiter_radius(float(value))
+        self._refresh_mission_summary()
+
+    def _set_home_from_fix(self) -> None:
+        gps = self.store.gps
+        if not gps or not gps.get("fix"):
+            self.statusBar().showMessage("No GPS fix available to set home")
+            return
+        lat = int(gps.get("lat_e7", 0) or 0) / 1e7
+        lon = int(gps.get("lon_e7", 0) or 0) / 1e7
+        alt = int(gps.get("alt_mm", 0) or 0) / 1000.0
+        self.mission.set_home(lat, lon, alt)
+        self.map_widget.set_home(lat, lon)
+        self._refresh_mission_summary()
+        self.statusBar().showMessage(f"Home set at {lat:.6f}, {lon:.6f}")
+
+    def _clear_waypoint(self) -> None:
+        self.mission.clear_waypoint()
+        self.map_widget.clear_waypoint()
+        self._refresh_mission_summary()
+
+    def _refresh_mission_summary(self) -> None:
+        aircraft = None
+        gps = self.store.gps
+        if gps and gps.get("fix"):
+            aircraft = (int(gps.get("lat_e7", 0) or 0) / 1e7, int(gps.get("lon_e7", 0) or 0) / 1e7)
+        lines = self.mission.summary(aircraft)
+        self.mission_summary.setText("\n".join(lines))
+
     def _make_packets_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
@@ -371,6 +489,13 @@ class MainWindow(QMainWindow):
         self.rx_buffer.clear()
         self.store.reset()
         self.attitude = AttitudeEstimator()
+        self.baro = BaroTracker()
+        self.baro_calibrated = False
+        self.mission.home = None
+        self.map_widget.track.clear()
+        self.map_widget.home = None
+        self.map_widget.set_aircraft(0.0, 0.0, None, False)
+        self._refresh_mission_summary()
         self.connect_button.setText("Disconnect")
         self.tiles["serial"].set_state("CONNECTED", device, "#55cf9a")
         self.statusBar().showMessage(f"Connected to {device} at 115200 baud")
@@ -396,7 +521,16 @@ class MainWindow(QMainWindow):
     def _restart_attitude_calibration(self) -> None:
         self.attitude.start_calibration()
         self.horizon.set_attitude(0.0, 0.0, 0.0, False, self.attitude.calibration_status)
-        self.statusBar().showMessage("Keep the aircraft level and motionless while calibration collects samples")
+        pressure = self.store.baro.get("pressure_pa", 0) or 0
+        if pressure:
+            self.baro.calibrate(pressure)
+            self.statusBar().showMessage(
+                "Calibrating gyro/level and barometer baseline — keep the aircraft still"
+            )
+        else:
+            self.statusBar().showMessage(
+                "Calibrating gyro/level — barometer baseline will be captured when data arrives"
+            )
 
     def _read_serial(self) -> None:
         if self.port is None:
@@ -440,10 +574,33 @@ class MainWindow(QMainWindow):
             self.gyro_plot.add_values(self.store.imu.get("gyro_cdeg_s", []), self.store.imu.get("ok", False))
             roll, pitch, heading, valid = self.attitude.update(self.store.imu)
             self.horizon.set_attitude(roll, pitch, heading, valid, self.attitude.calibration_status)
+            pressure = self.store.baro.get("pressure_pa", 0) or 0
+            if pressure and not self.baro_calibrated:
+                self.baro.calibrate(pressure)
+                self.baro_calibrated = True
         self.transmitter_view.set_rc(self.store.rc)
         self._update_channel_table()
         self._update_gps_panel()
+        self._update_map_from_telemetry()
         self._refresh_health()
+
+    def _update_map_from_telemetry(self) -> None:
+        gps = self.store.gps
+        fix = bool(gps.get("fix"))
+        if fix:
+            lat = int(gps.get("lat_e7", 0) or 0) / 1e7
+            lon = int(gps.get("lon_e7", 0) or 0) / 1e7
+            course = int(gps.get("course_centi_deg", 0) or 0) / 100.0
+            speed = int(gps.get("speed_cms", 0) or 0) / 100.0
+            heading = course if speed > 0.5 else None
+            self.map_widget.set_aircraft(lat, lon, heading, True)
+            self.map_widget.append_track(lat, lon)
+            if not self.mission.home:
+                self.mission.set_home(lat, lon, int(gps.get("alt_mm", 0) or 0) / 1000.0)
+                self.map_widget.set_home(lat, lon)
+            self._refresh_mission_summary()
+        else:
+            self.map_widget.set_aircraft(0.0, 0.0, None, False)
 
     def _update_channel_table(self) -> None:
         rc = self.store.rc
@@ -482,6 +639,14 @@ class MainWindow(QMainWindow):
         speed = int(gps.get("speed_cms", 0) or 0) / 100.0
         hdop = int(gps.get("hdop_centi", 0) or 0) / 100.0
         state = "FIX" if fix else ("NMEA stream; searching" if stream else "No GPS data")
+
+        baro_alt_text = "—"
+        pressure = self.store.baro.get("pressure_pa", 0) or 0
+        if pressure:
+            baro_alt = self.baro.altitude_m(pressure)
+            baro_alt_text = f"{baro_alt:+.1f} m" + ("" if self.baro.calibrated else " (std baseline)")
+
+        gps_alt_text = f"{altitude:.1f} m" if fix else "needs fix"
         self.gps_text.setText(
             f"GPS STATUS: {state}\n\n"
             f"Satellites: {sat_count}\n"
@@ -489,7 +654,8 @@ class MainWindow(QMainWindow):
             f"HDOP: {hdop:.2f}\n\n"
             f"Latitude: {lat:.7f}\n"
             f"Longitude: {lon:.7f}\n"
-            f"GPS altitude: {altitude:.1f} m\n"
+            f"GPS altitude: {gps_alt_text}\n"
+            f"Baro altitude (rel): {baro_alt_text}\n\n"
             f"Ground speed: {speed:.2f} m/s\n"
             f"Course: {int(gps.get('course_centi_deg', 0) or 0) / 100.0:.1f}°"
         )
@@ -595,9 +761,19 @@ class MainWindow(QMainWindow):
             imu_detail,
             "#55cf9a" if imu.get("ok") else "#e2aa57",
         )
+        pressure = self.store.baro.get("pressure_pa", 0) or 0
+        if self.store.baro.get("ok") and pressure:
+            rel_alt = self.baro.altitude_m(pressure)
+            temp = int(self.store.baro.get("temperature_centi_c", 0) or 0) / 100.0
+            baro_detail = (
+                f"alt {rel_alt:+.1f} m rel · {temp:.1f} °C"
+                + ("" if self.baro.calibrated else " · std baseline")
+            )
+        else:
+            baro_detail = "Check BMP280 I2C"
         self.tiles["baro"].set_state(
             "OK" if self.store.baro.get("ok") else "NO DATA",
-            "pressure and temperature" if self.store.baro.get("ok") else "Check BMP280 I2C",
+            baro_detail,
             "#55cf9a" if self.store.baro.get("ok") else "#e2aa57",
         )
         gps = self.store.gps
